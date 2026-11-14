@@ -49,7 +49,8 @@
 ;   uart_flush       Discard input until the line has been quiet for
 ;                    UART_FLUSH_QUIET samples, then clear uart_rx_errors and
 ;                    return CF=0. CF=1 when UART_FLUSH_MAX bytes went by and
-;                    more keep coming: the errors stay latched, call it again.
+;                    more keep coming: UART_RX_OVERFLOW is latched, so reads
+;                    stay refused until a later flush completes.
 ;                    Destroys A, BC, DE.
 ;   uart_read_block  HL = buffer, B = room (1..255, 0 = 256). Stores bytes
 ;                    until the buffer is full, the line goes idle or an error
@@ -272,8 +273,10 @@ uart_flush_byte:
     ld a, h
     or l
     jr nz, uart_flush_quiet
+    ld hl, uart_rx_errors       ; gave up: reads stay refused until a
+    set 2, (hl)                 ; flush completes (UART_RX_OVERFLOW)
     pop hl
-    scf                         ; gave up: the errors stay latched
+    scf
     ret
 
 uart_read_block:

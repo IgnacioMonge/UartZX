@@ -14,7 +14,7 @@ backends, the same entry points on all of them.
 | Backend | Hardware | Files | Size |
 |---|---|---|---|
 | divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. 115200 baud, fixed by the hardware | `src/divmmc.inc`, `src/divmmc_vars.inc` | 157 bytes |
-| Next | ZX Spectrum Next internal UART (`#133B`..`#163B`). 115200 baud by default | `src/next.inc`, `src/next_vars.inc`, optional `src/next_baud_*.inc` | 326 bytes |
+| Next | ZX Spectrum Next internal UART (`#133B`..`#163B`). 115200 baud by default | `src/next.inc`, `src/next_vars.inc`, optional `src/next_baud_*.inc` | 331 bytes |
 | AY | Bit-banged serial on I/O port A of the AY-3-8912. 9600 baud | `src/ay.inc`, `src/ay_vars.inc`, optional `src/ay_speed.inc` | 367 bytes |
 
 Every backend offers the same routines:
@@ -101,7 +101,9 @@ start:
     jr c, no_uart               ; divMMC and Next: the write timed out
     ld b, 0                     ; bound every wait yourself
 wait:
+    push bc                     ; uart_read destroys BC
     call Uart.uart_read         ; CF=1: A = byte
+    pop bc
     jr c, got_byte
     djnz wait
 no_uart:
@@ -158,6 +160,7 @@ package (`pip install z80==1.2.0`).
   against a UART model built from the HDL of its hardware. They check the
   register contract, T-state costs, the failure latches, error handling, and
   that no byte is written to a busy or full transmitter.
+- `test_readme.py`: the example below "How to use it" assembles and runs.
 - `test_ay.py`: the AY driver against a model of the AY port and an ESP at
   9600 baud. Every bit sent is decoded and every bit received is sampled in
   emulated T-states, at the 48K and 128K clocks and with the ESP 2.5 % off.

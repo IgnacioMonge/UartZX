@@ -16,7 +16,7 @@ the applications do not care which one is included.
 | `uart_read_raw` | | As `uart_read`, ignoring earlier receive errors. On the Next, the read that latches a new error reports no byte |
 | `uart_ready` | | CF=1 when `uart_read` would return a byte; nothing is consumed |
 | `uart_write` | A = byte | CF=0 sent, CF=1 not sent. Preserves A, BC, DE, HL |
-| `uart_flush` | | Discards pending input and clears receive errors. CF=1 (Next, AY): it gave up with input still arriving, and on the Next the errors stay latched |
+| `uart_flush` | | Discards pending input and clears receive errors. CF=1 (Next, AY): it gave up with input still arriving, and on the Next reads stay refused until a flush completes |
 | `uart_read_block` | HL = buffer, B = room | HL = next free position, D = room left, CF=1 buffer full |
 | `uart_write_string` (`send.inc`) | HL = NUL-terminated text | CF=1 and HL at the unsent byte on failure |
 | `uart_write_block` (`send.inc`) | HL = data, BC = length | CF=1, HL and BC at the unsent byte on failure |
@@ -167,7 +167,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | DI/EI around the NextReg select and read | BridgeZXadv, NetChessZX, NetManZX | Replaced | `uart_set_baud` reads the selection back and retries, so it never forces interrupts on |
 | Drain inside init | BridgeZXadv, SpecTalkZX | Dropped | The frame reset empties the FIFOs |
 | Flush | BridgeZXadv (to first empty poll), SpecTalkZX (512 reads; or to empty, 1024 at most) | Taken as a quiet-window flush | At 28 MHz the FIFO looks empty after every byte; a count can end with bytes left when the FIFO was full |
-| Flush that gives up says so | none | Added | When `UART_FLUSH_MAX` bytes go by and more keep coming, the errors stay latched and CF=1: a caller is never told a stream is clean while it is still arriving. Found by an external audit |
+| Flush that gives up says so | none | Added | When `UART_FLUSH_MAX` bytes go by and more keep coming it returns CF=1 and latches `UART_RX_OVERFLOW`, whatever the latch held: reads stay refused until a flush completes, so a caller that ignores CF is not handed the tail of a burst the flush cut. Found by external audits |
 | Fast bulk receive | BitStream (drain into its ring), BridgeZXadv (loop inlined in the application) | Taken as `uart_read_block` | Ring-agnostic; new code |
 | ESP reset pulse, 25 frames | BridgeZXadv, NetChessZX, NetManZX | Taken | The boot wait and whatever follows stay with the caller |
 | `IM 1` before the reset wait | NetChessZX | Left to the application | Specific to its C runtime |
@@ -186,9 +186,9 @@ adds at 28 MHz are not modelled.
 |---|---|---|---|---|
 | Read, nothing pending | 88 (66 raw) | 117 | 80 | 99 |
 | Read, byte returned | 108 (86 raw) | not counted | not counted | not counted |
-| Size | 326 bytes | 360 bytes | 239 bytes | 267 bytes |
+| Size | 331 bytes | 360 bytes | 239 bytes | 267 bytes |
 
-- The 326 bytes include the 115200 table and two state bytes; each further
+- The 331 bytes include the 115200 table and two state bytes; each further
   rate adds 16. The 360 of BridgeZXadv include three tables.
 - `uart_write` takes 152 T-states when the FIFO has room.
 - `uart_read_block` stores a byte every 98 T-states while the FIFO has data;

@@ -275,6 +275,19 @@ class Next(unittest.TestCase):
         self.assertEqual((d.carry, self.errors()), (False, 0))
         self.assertFalse(self.uart.arrivals or self.uart.fifo)
 
+    def test_flush_that_gives_up_refuses_reads(self):
+        d = self.d
+        self.uart.feed(bytes(600))  # overflows, and no read has seen it
+        self.uart.feed(bytes(5000), spacing=BYTE)
+        self.assertEqual(self.errors(), 0)
+        d.call("uart_flush")
+        self.assertTrue(d.carry, "it gave up")
+        self.assertEqual(self.errors(), OVERFLOW)
+        d.call("uart_read")
+        self.assertFalse(d.carry)  # not the tail of a burst it cut
+        d.call("uart_flush")
+        self.assertEqual((d.carry, self.errors()), (False, 0))
+
     def test_write(self):
         d = self.d
         for byte in b"AT\r\n":

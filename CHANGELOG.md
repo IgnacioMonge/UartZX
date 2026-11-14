@@ -43,7 +43,8 @@ from its first release.
   (`tests/test_assembly.py`), and the drivers run on the Python `z80`
   emulator: divMMC and Next against UART models built from the HDL
   (`tests/test_divmmc.py`, `tests/test_next.py`), AY against a model of the
-  AY port with every bit placed in T-states (`tests/test_ay.py`).
+  AY port with every bit placed in T-states (`tests/test_ay.py`). The README
+  example is assembled and run too (`tests/test_readme.py`).
 - The versions of the NetManZX, NetChessZX, BridgeZX, SpecTalkZX and
   BitStream drivers the design was compared against (`docs/sources.md`).
 - MIT licence.

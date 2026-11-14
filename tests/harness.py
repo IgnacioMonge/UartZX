@@ -17,7 +17,9 @@ STACK = 0xFF00
 
 
 def source(name):
-    return (ROOT / "src" / name).as_posix()
+    """Path of a src/ file; an absolute path is taken as it is."""
+    path = Path(name)
+    return (path if path.is_absolute() else ROOT / "src" / name).as_posix()
 
 
 def assemble(tmp, name, lines, *cmd):
