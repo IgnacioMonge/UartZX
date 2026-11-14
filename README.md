@@ -165,18 +165,6 @@ package (`pip install z80==1.2.0`).
 The tests prove the drivers match those models. They do not prove the models
 match your hardware.
 
-## What is not proven
-
-- Nothing has run on a real divTIESUS, ZX-Uno, Spectrum Next or AY
-  interface.
-- The divMMC model comes from the published HDL; a CPLD image in the field
-  may differ.
-- The Next tests do not model the wait states the machine adds at 28 MHz.
-- `uart_read_block`, the Next quiet-window `uart_flush` and the restored
-  timing of `uart_esp_set_9600` are new code that no application has run.
-- z88dk has only been exercised through `z88dk-z80asm`, not a full `zcc`
-  build.
-
 ## Repository layout
 
 - `src/`: the drivers.
