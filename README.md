@@ -178,10 +178,3 @@ match your hardware.
 
 [MIT](LICENSE): use it, change it and ship it in anything, keeping the
 copyright notice.
-
-One caveat on provenance: these drivers descend from netman-zx, whose
-repository carried no licence file or statement on 2026-11-14. The lineage is
-most direct in the AY backend's bit loops and is visible in the register
-names and access sequences of the other two. The MIT licence here covers
-this repository's own work; if that matters to you, look at that origin
-before relying on it.
