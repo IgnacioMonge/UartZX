@@ -25,7 +25,9 @@ the applications do not care which one is included.
 `uart_tx_failed` and later writes are refused until `uart_init`. An
 application that keeps its own fault latch may copy the failure there and
 write 0 to `uart_tx_failed`; it then owns the rule that a command is never
-sent with holes. No routine
+sent with holes. On the Next it may likewise read through `uart_read_raw`,
+move `uart_rx_errors` into its latch and write 0 to it; it then owns the
+rule that a stream with a hole is never delivered as whole. No routine
 uses IX, IY or the alternate registers unless its header says so. divMMC and
 Next implement this contract in full. A bit-banged port cannot: the AY
 section lists its exceptions.
