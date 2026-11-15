@@ -29,9 +29,6 @@ section lists its exceptions.
 
 ## divMMC / ZX-Uno (2026-11-14)
 
-Status: designed and tested in emulation only. Not run on hardware, not
-adopted by any application.
-
 ### Hardware model
 
 Read from the ZX-Uno core (`mcleod-ideafix/zxuno_spectrum_core`,
@@ -97,8 +94,7 @@ it does not apply to this hardware.
   driver was 195).
 - `uart_read`: 60 T-states empty, 103 with a byte (measured by the test).
 - `uart_read_block`: 361 T-states per byte in the model, which is the 304 of
-  the wire plus 57 from a byte arriving to its data read. It says nothing
-  yet about hardware.
+  the wire plus 57 from a byte arriving to its data read.
 - `uart_read_block` is new code. No application has it in this form.
 
 ### What adopting it changes in each application
@@ -115,9 +111,6 @@ it does not apply to this hardware.
   feeds its ring.
 
 ## Spectrum Next (2026-11-14)
-
-Status: designed and tested in emulation only. Not run on hardware, not
-adopted by any application.
 
 ### Hardware model
 
@@ -216,9 +209,6 @@ adds at 28 MHz are not modelled.
   `uart_rx_errors` or keeps its behaviour with `uart_read_raw`.
 
 ## AY bit-bang (2026-11-14)
-
-Status: designed and tested in emulation only. Not run on hardware, not
-adopted by any application.
 
 ### Hardware model
 

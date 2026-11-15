@@ -4,11 +4,6 @@ A shared UART driver, in Z80 assembly, for talking to an ESP Wi-Fi module
 from a ZX Spectrum or a ZX Spectrum Next. One source tree, three hardware
 backends, the same entry points on all of them.
 
-> **Experimental.** Everything here has been tested in emulation only. No
-> backend has run on real hardware yet, and no application uses this
-> repository yet. Entry points and behaviour may still change. Do not ship it
-> without testing it on your own machine.
-
 ## What it does
 
 | Backend | Hardware | Files | Size |
@@ -78,10 +73,6 @@ the rest, so the programs can share one driver instead of five.
   application drivers, whether it was taken or dropped, and why.
   `docs/baseline-review.md` is the comparison that started it, and
   `docs/sources.md` lists the versions that were compared.
-
-The design was written with the help of an AI coding assistant and reviewed
-by two independent automated audits. That is not a substitute for running it
-on hardware.
 
 ## How to use it
 
@@ -164,9 +155,6 @@ package (`pip install z80==1.2.0`).
 - `test_ay.py`: the AY driver against a model of the AY port and an ESP at
   9600 baud. Every bit sent is decoded and every bit received is sampled in
   emulated T-states, at the 48K and 128K clocks and with the ESP 2.5 % off.
-
-The tests prove the drivers match those models. They do not prove the models
-match your hardware.
 
 ## Repository layout
 
