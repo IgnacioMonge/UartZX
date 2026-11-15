@@ -203,9 +203,12 @@ a Next adds at 28 MHz.
   `uartReady` no longer returns the byte; `write` no longer refuses on RX
   errors; `setBaudNNN` becomes `uart_set_baud` with a table, followed by
   `uart_flush`; turbo moves to the application.
-- **NetManZX:** `Uart.io_error` is fed from `uart_rx_errors` and
-  `uart_tx_failed`; baud scan and recovery call `uart_set_baud` with the
-  table files.
+- **NetManZX:** `src/drivers/next.asm` keeps its `UartImpl` names over the
+  driver. It reads through `uart_read_raw`, reads the status before each
+  byte it sends, and moves `uart_rx_errors` and `uart_tx_failed` into
+  `Uart.io_error`, which only its input drain clears. Baud scan and
+  recovery call `uart_set_baud` with the table files; its hard reset is
+  `uart_esp_reset`.
 - **NetChessZX:** `_net_uart_rx_error` maps to `uart_rx_errors` (mask `#44`
   instead of `#64`); its reset wrapper keeps `IM 1` and the boot wait; the
   50/60 Hz tick count moves out of the driver.
@@ -318,10 +321,11 @@ T-states measured by the tests on the Python `z80` emulator.
 
 ### What adopting it changes in each application
 
-- **NetManZX:** `init` no longer waits 255 frames or sends the speed command.
-  The application waits for the ESP, calls `uart_esp_set_9600` if it wants
-  the old intent (it now takes effect), then `uart_flush`. `_baud` is gone.
-  `uartRead` keeps DE and HL.
+- **NetManZX:** `src/drivers/ay.asm` keeps its `UartImpl` names over the
+  driver. Its init calls `uart_init` and keeps the 255-frame wait for the
+  ESP; it sends no speed command, so the ESP must already run at 9600 baud
+  with CTS flow control, as it had to before. `_baud` and the second-byte
+  variables are gone; `uartRead` keeps DE and HL.
 - **BitStream:** `ay_uart_ready` and `ay_uart_ready_fast` no longer sample
   the line: its drain polls with `uart_read` or uses `uart_read_block`.
   `ay_uart_send_block` becomes `uart_write_block`. The 50-frame wait and the
