@@ -22,7 +22,10 @@ the applications do not care which one is included.
 | `uart_write_block` (`send.inc`) | HL = data, BC = length | CF=1, HL and BC at the unsent byte on failure |
 
 `uart_read` preserves DE and HL. A failed `uart_write` latches
-`uart_tx_failed` and later writes are refused until `uart_init`. No routine
+`uart_tx_failed` and later writes are refused until `uart_init`. An
+application that keeps its own fault latch may copy the failure there and
+write 0 to `uart_tx_failed`; it then owns the rule that a command is never
+sent with holes. No routine
 uses IX, IY or the alternate registers unless its header says so. divMMC and
 Next implement this contract in full. A bit-banged port cannot: the AY
 section lists its exceptions.
@@ -100,8 +103,12 @@ it does not apply to this hardware.
 - **BridgeZXadv:** `uartReady` returned the byte and `ui.asm` compares it;
   `net.asm` reads `Uart._is_recv` and `_rx_byte`. Both go: a peek needs a
   private byte on the application side. Init no longer drains.
-- **NetManZX:** the TX timeout sets `uart_tx_failed` instead of
-  `Uart.io_error`; `is_recv`/`byte_buff` go; init no longer drains.
+- **NetManZX:** `src/drivers/zxuno.asm` keeps its `UartImpl` names over the
+  driver. A failed `uart_write` sets `Uart.io_error` and clears
+  `uart_tx_failed`, because NetManZX clears `io_error` itself once it has
+  drained the input and aborted the damaged line. Init keeps its 50-frame
+  drain and ends with `uart_flush`; `is_recv`/`byte_buff` go. NetManZX does
+  not send `AT+UART_CUR=115200,8,1,0,2`.
 - **NetChessZX:** its send returns the result in L and retries; the wrapper
   maps CF and the retries go.
 - **SpecTalkZX, BitStream:** the latch is `uart_tx_failed` and a failure

@@ -26,6 +26,9 @@ from its first release.
   (`src/next_baud_*.inc`).
 - `src/send.inc`: `uart_write_string` and `uart_write_block` for every
   backend.
+- Shared contract: a program that keeps its own fault latch may copy a
+  failed `uart_write` into it and clear `uart_tx_failed`, taking over the
+  rule that a command is never sent with holes (`docs/design.md`).
 - Canonical AY bit-banged driver (`src/ay.inc`), redesigned from the
   NetManZX and BitStream drivers and the netman-zx original: unchanged bit
   timing, a known port level after `uart_init`, CTS raised on every exit,
