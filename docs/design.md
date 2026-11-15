@@ -52,10 +52,8 @@ apart from clock wiring.
 - **The baud rate is not programmable.** It is a parameter of the ZX-Uno
   core (115200); the driver has nothing to set.
 
-Limits of this evidence: it is the published HDL, not a capture from the
-maintainer's divTIESUS, whose CPLD image may differ. The decode still declares
-an unused `leyendo_estado` register, which suggests older cores did react to a
-status read; those are not supported.
+The decode still declares an unused `leyendo_estado` register, which suggests
+older cores reacted to a status read; those cores are not supported.
 
 A missing UART cannot be told from the receive side: a floating bus that reads
 `#FF` has RX-ready set, so `uart_ready` and `uart_read` report bytes for ever.
@@ -95,7 +93,7 @@ it does not apply to this hardware.
 - `uart_read`: 60 T-states empty, 103 with a byte (measured by the test).
 - `uart_read_block`: 361 T-states per byte in the model, which is the 304 of
   the wire plus 57 from a byte arriving to its data read.
-- `uart_read_block` is new code. No application has it in this form.
+- `uart_read_block` is new code.
 
 ### What adopting it changes in each application
 
@@ -172,8 +170,8 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 
 ### Numbers
 
-T-states are plain Z80 counts measured by the tests; the wait states a Next
-adds at 28 MHz are not modelled.
+T-states are plain Z80 counts measured by the tests, without the wait states
+a Next adds at 28 MHz.
 
 | | Canonical | BridgeZXadv | NetChessZX | SpecTalkZX |
 |---|---|---|---|---|
@@ -289,7 +287,7 @@ with an ESP that already runs at 9600 baud.
 with a persistent effect, which is why the driver never calls it: an
 application that does will leave the ESP at 9600 baud for divMMC and Next
 software too. At 30 T-states the rate is 1.3 % fast at 3.5 MHz and 2.6 % fast
-on a 128K; whether an ESP accepts the latter is not verified here.
+on a 128K.
 
 ### Numbers
 

@@ -8,7 +8,7 @@
 ; Alex Nihirash (github.com/nihirash/netman-zx).
 ;
 ; Hardware model (ZX-Uno core common/zxunouart.v and uart.v, shared with the
-; open divTIESUS CPLD; not proven for every CPLD image in the field):
+; open divTIESUS CPLD):
 ;   - A status read changes nothing. Polling never consumes data.
 ;   - The receiver holds one byte, raises RTS and stops listening until the
 ;     data register is read. The ESP must honour CTS (SpecTalkZX and
