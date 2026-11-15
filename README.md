@@ -10,7 +10,7 @@ backends, the same entry points on all of them.
 |---|---|---|---|
 | divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. 115200 baud, fixed by the hardware | `src/divmmc.inc`, `src/divmmc_vars.inc` | 157 bytes |
 | Next | ZX Spectrum Next internal UART (`#133B`..`#163B`). 115200 baud by default | `src/next.inc`, `src/next_vars.inc`, optional `src/next_baud_*.inc` | 331 bytes |
-| AY | Bit-banged serial on I/O port A of the AY-3-8912. 9600 baud | `src/ay.inc`, `src/ay_vars.inc`, optional `src/ay_speed.inc` | 367 bytes |
+| AY | Bit-banged serial on I/O port A of the AY-3-8912. 9600 baud | `src/ay.inc`, `src/ay_vars.inc`, optional `src/ay_speed.inc` | 396 bytes |
 
 Every backend offers the same routines:
 

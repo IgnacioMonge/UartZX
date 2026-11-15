@@ -14,11 +14,18 @@ T_128 = 3_546_900 / 9600  # 128K clock
 
 class AyUart:
     def __init__(
-        self, bit=T_3_5, flow=True, react=0, stuck_low=False, chatter=False
+        self,
+        bit=T_3_5,
+        flow=True,
+        react=0,
+        release=0,
+        stuck_low=False,
+        chatter=False,
     ):
         self.bit = bit  # T-states per bit as the ESP sends
         self.flow = flow  # the ESP honours CTS
         self.react = react  # T-states from CTS falling to the ESP's start bit
+        self.release = release  # T-states after CTS rises it may still start one
         self.stuck_low = stuck_low  # RX shorted to ground
         # After the last frame every sample flips, starting low: each start
         # bit the driver sees is gone when it looks again.
@@ -31,6 +38,7 @@ class AyUart:
         self.frames = []  # (start clock, byte) put on the RX line
         self.next_free = 0  # end of the last frame
         self.cts_low_at = None
+        self.cts_high_at = None  # CTS rose after cts_low_at
         self.tx = []  # (clock, level) every time TX changes
         self.ports = set()
         self.interrupts = lambda: False  # set by the test: are interrupts enabled?
@@ -52,6 +60,9 @@ class AyUart:
                 if self.cts_low_at is None:
                     return
                 start = max(start, self.cts_low_at + self.react)
+                if self.cts_high_at is not None:
+                    if start >= self.cts_high_at + self.release:
+                        return
             if start > now:
                 return
             self.queue.popleft()
@@ -104,9 +115,11 @@ class AyUart:
                 if (before ^ value) & 0x08 or not self.tx:
                     self.tx.append((self.clock(), (value >> 3) & 1))
                 if value & 0x04:
-                    self.cts_low_at = None
+                    if self.cts_low_at is not None and self.cts_high_at is None:
+                        self.cts_high_at = self.clock()
                 elif before & 0x04 or self.cts_low_at is None:
                     self.cts_low_at = self.clock()
+                    self.cts_high_at = None
                     self.cts_falls += 1
 
     # --- what the ESP would have received -------------------------------

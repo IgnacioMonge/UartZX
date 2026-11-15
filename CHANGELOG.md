@@ -33,7 +33,9 @@ from its first release.
   returns CF=0, `uart_ready`, `uart_flush` and `uart_read_block`. Init no
   longer waits or sends anything. A line that keeps pulsing after a byte can
   no longer hold `uart_read` with interrupts off, as it could in the
-  application drivers.
+  application drivers. A byte the ESP starts just as a read gives up, up to
+  1.5 bit times after CTS rises, is received; the NetManZX driver loses it or
+  reads it from its middle on the next call.
 - `src/ay_speed.inc` (optional): `uart_esp_set_9600` sends the persistent
   `AT+UART_DEF=9600,8,1,0,2` at 115200 baud, as the netman-zx original did.
   The counted loops in NetManZX and BitStream sent it at a rate no ESP reads.

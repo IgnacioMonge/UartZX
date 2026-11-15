@@ -288,6 +288,15 @@ class Next(unittest.TestCase):
         d.call("uart_flush")
         self.assertEqual((d.carry, self.errors()), (False, 0))
 
+    def test_flush_that_ends_at_its_limit_does_not_give_up(self):
+        d = self.d
+        self.uart.feed(bytes(d.symbols["UART_FLUSH_MAX"]), spacing=BYTE)
+        d.call("uart_flush")  # the limit, then silence
+        self.assertEqual((d.carry, self.errors()), (False, 0))
+        self.uart.feed(b"K")
+        d.call("uart_read")
+        self.assertEqual((d.carry, d.m.a), (True, ord("K")))
+
     def test_write(self):
         d = self.d
         for byte in b"AT\r\n":

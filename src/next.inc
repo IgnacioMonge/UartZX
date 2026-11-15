@@ -249,7 +249,7 @@ uart_write_room:
 uart_flush:
     push hl
     ld bc, UART_TX
-    ld hl, UART_FLUSH_MAX
+    ld hl, UART_FLUSH_MAX + 1   ; the extra byte tells whether more is coming
 uart_flush_quiet:
     ld de, UART_FLUSH_QUIET
 uart_flush_poll:

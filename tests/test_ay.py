@@ -1,9 +1,10 @@
 """AY bit-banged backend against a model of the AY port and an ESP sending at
 9600 baud (tests/ay_model.py). Every bit is placed in emulated T-states, for
-the 48K and the 128K clocks; nothing here has run on hardware.
+the 48K and the 128K clocks.
 """
 
 import unittest
+from itertools import product
 
 from ay_model import T_128, T_3_5, AyUart
 from harness import Driver
@@ -81,7 +82,7 @@ class Ay(unittest.TestCase):
         self.assertFalse(d.carry)
         self.assertEqual((d.m.de, d.m.hl, uart.regs[14]), (0x1234, 0x5678, IDLE))
         self.assertTrue(d.m.iff1)
-        self.assertEqual(took, 13712)  # 3.9 ms
+        self.assertEqual(took, 13720)  # 3.9 ms
         d.device = NoAy()  # no AY at all: the bus floats high
         self.assertIsNone(self.read())
 
@@ -100,6 +101,26 @@ class Ay(unittest.TestCase):
                         self.assertEqual((d.m.de, d.m.hl), (0x1234, 0x5678))
                         self.assertEqual(uart.regs[14], IDLE)
                         self.assertTrue(d.m.iff1)
+
+    def test_read_takes_a_byte_started_as_it_gives_up(self):
+        # CTS rises when a read gives up. A byte the ESP had already started,
+        # or starts up to a bit time later, must still arrive whole.
+        d = self.d
+        for clock in (T_3_5, T_128):
+            for error, release in product((-0.025, 0, 0.025), (0, round(clock))):
+                for ready in range(12950, 13700, 7):
+                    uart = self.esp(bit=clock * (1 + error), release=release)
+                    uart.feed(b"OK", delay=ready)
+                    got, idle = bytearray(), 0
+                    while idle < 2:
+                        d.call("uart_read", de=0x1234, hl=0x5678)
+                        self.assertEqual((d.m.de, d.m.hl), (0x1234, 0x5678))
+                        byte = d.m.a if d.carry else None
+                        idle = idle + 1 if byte is None else 0
+                        if byte is not None:
+                            got.append(byte)
+                    self.assertEqual(bytes(got), b"OK", (clock, error, release, ready))
+                    self.assertTrue(d.m.iff1)
 
     def test_second_byte_is_kept(self):
         d = self.d
@@ -122,7 +143,7 @@ class Ay(unittest.TestCase):
         uart.feed(b"U")
         took = d.call("uart_read")  # false starts of a second byte
         self.assertEqual((d.carry, d.m.a), (True, ord("U")))
-        self.assertLess(took, 5333 + 40 * 62)
+        self.assertLess(took, 5343 + 40 * 62)
         self.assertEqual((uart.regs[14], d.byte("uart_second_avail")), (IDLE, 0))
         self.assertTrue(d.m.iff1)
         self.assertIsNone(self.read())  # and of a first one
@@ -153,6 +174,19 @@ class Ay(unittest.TestCase):
 
         d.device = NoAy()
         self.assertLess(d.call("uart_flush"), 14000)
+
+    def test_flush_that_ends_at_its_limit_does_not_give_up(self):
+        d = self.d
+        uart = self.esp()
+        uart.feed(bytes(d.symbols["UART_FLUSH_MAX"]))  # then silence
+        d.LIMIT = 40_000_000
+        try:
+            d.call("uart_flush")
+        finally:
+            del d.LIMIT
+        self.assertFalse(d.carry)
+        uart.feed(b"K")
+        self.assertEqual(self.read(), ord("K"))
 
     def test_flush_is_bounded_on_a_dead_line(self):
         d = self.d

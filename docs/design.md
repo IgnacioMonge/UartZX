@@ -258,7 +258,7 @@ the three drivers agree on and from the AY-3-8912 register set.
 | 33 T-state delay inside start-bit detection | NetManZX | Dropped | It took the place of a debug border pulse (NetManZX `34c1324`); upstream and BitStream have no delay there. NetManZX has only run on hardware with it, so dropping it rests on the model: the driver accepts bit periods of 354.1 to 382.6 T without it and 358.1 to 386.6 with it; the real ones are 364.6 and 369.5, so without it the smaller margin grows from 1.8 % to 2.9 % (3.5 MHz) and from 3.1 % to 3.5 % (128K) |
 | Second byte captured after CTS is raised | upstream, NetManZX, BitStream | Taken | The ESP may already have started it |
 | A false start of the second byte goes back to waiting without counting | upstream, NetManZX, BitStream | Fixed: it uses up a poll | A line that keeps pulsing held `uart_read` for ever with interrupts off. No bytes, and no change for a real byte. Found by two external audits |
-| CTS raised again on a timeout | NetManZX | Taken | BitStream leaves CTS low, so the ESP sends into nothing; upstream raises it and then still waits for a second byte |
+| CTS raised again on a timeout | NetManZX | Taken, followed by `UART_LATE_POLLS` samples (1.5 bit times) | BitStream leaves CTS low, so the ESP sends into nothing; upstream raises it and then still waits for a second byte. NetManZX, and this driver before the fix, return at once, so a byte the ESP starts just before it sees CTS rise is lost, or read from its middle by the next call: 8 of 1988 reply timings in the model, measured on that earlier version. A byte caught by the late samples accepts bit periods of 355.5 to 388 T. `UART_START_POLLS` drops from 250 to 240 to keep the timeout at 3.9 ms. Found by an independent review |
 | Main register set restored on every exit | NetManZX | Taken | BitStream returns from two exits with the alternate set selected |
 | `uart_read` preserves DE and HL | none | Added | Shared contract. The pushes and pops are outside the timed code |
 | Port value read back and modified | upstream, NetManZX, BitStream | Replaced by two constants | In init, upstream and BitStream read the latch through the data port and NetManZX through the register port, and all three write back what they read, TX low included. `#FE` and `#FA` are the values the read-modify-write produced after any write |
@@ -295,11 +295,11 @@ T-states measured by the tests on the Python `z80` emulator.
 
 | | Canonical | Copied NetManZX driver |
 |---|---|---|
-| Size | 367 bytes, plus 360 for `ay_speed.inc` | 656 bytes |
+| Size | 396 bytes, plus 360 for `ay_speed.inc` | 656 bytes |
 | TX bit | 370 | 370 |
 | `uart_write` | 4233 | not measured |
-| `uart_read`, byte | 5333 | not measured |
-| `uart_read`, timeout | 13712 (3.9 ms) | not measured |
+| `uart_read`, byte | 5343 | not measured |
+| `uart_read`, timeout | 13720 (3.9 ms) | not measured |
 | Bit period accepted | 354.1 to 382.6 | 358.1 to 386.6 |
 | Speed command bit | 30 | 56 |
 
