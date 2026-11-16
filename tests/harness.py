@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ORG = 0x8100  # the AY driver must sit above #8000
 STOP = 0x0000  # return address of every call
 STACK = 0xFF00
+TICKS = 100_000  # the z80 package's own frame: its frame_tick counter wraps here
 
 
 def source(name):
@@ -51,29 +52,39 @@ class Driver:
 
     `device` gets `clock` (a callable returning elapsed T-states) and must
     offer inp(port) and out(port, value). HALT waits for the next frame
-    interrupt, served by a bare `EI : RET` handler at 0x0038.
+    interrupt, served by a bare `EI : RET` handler at 0x0038. The interrupt
+    comes every FRAME T-states of emulated time, counted from the creation of
+    the Driver across calls, and its acceptance cycle counts as time.
+
+    `linked` = (blocks, symbols) loads code another linker placed, as
+    {address: bytes} and {name: address}, instead of assembling `parts`.
     """
 
     LIMIT = 8_000_000  # T-states before a call counts as hung
-    FRAME = 69888  # T-states per slice; the machine raises its own frame interrupts
+    FRAME = 69888  # T-states between frame interrupts, as on a 48K
 
-    def __init__(self, parts, device):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            image = sjasmplus(tmp, "driver", [source(part) for part in parts])
-            symbols = (tmp / "driver.sym").read_text()
-        self.symbols = {
-            name: int(value, 16)
-            for name, value in re.findall(
-                r"^(\S+): EQU 0x([0-9A-Fa-f]+)$", symbols, re.M
-            )
-        }
+    def __init__(self, parts, device, linked=None):
+        if linked:
+            blocks, self.symbols = linked
+        else:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                image = sjasmplus(tmp, "driver", [source(part) for part in parts])
+                symbols = (tmp / "driver.sym").read_text()
+            blocks = {ORG: image}
+            self.symbols = {
+                name: int(value, 16)
+                for name, value in re.findall(
+                    r"^(\S+): EQU 0x([0-9A-Fa-f]+)$", symbols, re.M
+                )
+            }
         self.m = z80.Z80Machine()
-        self.m.set_memory_block(ORG, image)
+        for address, data in blocks.items():
+            self.m.set_memory_block(address, data)
         self.m.set_memory_block(0x0038, bytes([0xFB, 0xC9]))
-        self.m.ticks_to_stop = self.FRAME
         self.elapsed = 0  # T-states of finished calls
         self.took = 0  # T-states of the running call, before the current slice
+        self.start = self.m.frame_tick  # where the current slice began
         self.frames = 0  # frame interrupts taken
         self.io = 0  # port accesses, for "touches no port" checks
         self.device = device
@@ -83,7 +94,14 @@ class Driver:
         self.m.set_breakpoint(STOP)
 
     def clock(self):
-        return self.elapsed + self.took + self.FRAME - self.m.ticks_to_stop
+        return self.elapsed + self.took + (self.m.frame_tick - self.start) % TICKS
+
+    def _slice(self, run):
+        """Run the machine and add the T-states it took to the call."""
+        self.start = self.m.frame_tick
+        run()
+        self.took += (self.m.frame_tick - self.start) % TICKS
+        self.start = self.m.frame_tick
 
     def _inp(self, port):
         self.io += 1
@@ -112,13 +130,13 @@ class Driver:
         while m.pc != STOP:
             if self.took > self.LIMIT:
                 raise AssertionError(f"{name}: did not return, PC={m.pc:04x}")
-            m.ticks_to_stop = self.FRAME
-            events = m.run()
-            self.took += self.FRAME - m.ticks_to_stop
-            m.ticks_to_stop = self.FRAME
-            if events & m._END_OF_FRAME and m.iff1:
+            # Run to the next frame boundary. The package's own frame events,
+            # every 100000 T-states, only stop run() early.
+            m.ticks_to_stop = self.FRAME - (self.elapsed + self.took) % self.FRAME
+            self._slice(m.run)
+            if m.ticks_to_stop == 0 and m.pc != STOP and m.iff1:
                 self.frames += 1
-                m.on_handle_active_int()
+                self._slice(m.on_handle_active_int)
             elif m.halted and not m.iff1:
                 raise AssertionError(f"{name}: HALT with interrupts disabled")
         took, self.took = self.took, 0

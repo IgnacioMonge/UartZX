@@ -2,7 +2,8 @@
 ; AY-3-8912. Needs ay_vars.inc; ay_speed.inc is optional.
 ;
 ; The timed bit loops descend, through NetManZX, from netman-zx by Alex
-; Nihirash (github.com/nihirash/netman-zx).
+; Nihirash (github.com/nihirash/netman-zx), which publishes no licence: see
+; the licence section of the README.
 ;
 ; Written in the syntax sjasmplus and z88dk-z80asm share: global labels only,
 ; EQU, 0x literals, no macros, modules or sections.
@@ -26,26 +27,44 @@
 ;     outside a read, or after its second byte, is lost.
 ;   - There is no status to sample, so the driver cannot tell a missing ESP
 ;     from a quiet one: uart_write always reports success.
+;   - A received byte whose stop bit reads low is dropped and latches
+;     UART_RX_FRAMING in uart_rx_errors, as a framing error does on the Next.
+;     From then on uart_read and uart_read_block report nothing until
+;     uart_flush (or uart_init): a stream with a hole is never handed over
+;     as whole, and a line held low no longer reads as a run of 0x00 bytes.
 ;
-;   uart_init        Port A as output, TX and CTS high, forget a kept byte.
-;                    It does not wait and sends nothing. Destroys A, BC.
+;   uart_init        Port A as output, TX and CTS high, forget a kept byte,
+;                    clear uart_rx_errors.
+;                    It does not wait and sends nothing. It writes the whole
+;                    mixer as UART_MIXER_VALUE. Destroys A, BC.
+;   uart_init_keep_mixer  As uart_init, but it only sets mixer bit 6 (port
+;                    A as output): tone and noise stay as they were. A music
+;                    player that rewrites register 7 must keep bit 6 set, or
+;                    the TX and CTS lines stop driving the ESP.
 ;   uart_read        CF=1 and A = byte, or CF=0 when no start bit came within
 ;                    UART_START_POLLS samples with CTS low, nor within
 ;                    UART_LATE_POLLS more after raising it, where a byte the
 ;                    ESP had already started would show (3.9 ms in all).
+;                    CF=0 at once, without touching the port, while
+;                    uart_rx_errors is not zero.
 ;                    Destroys BC and the alternate set (AF', BC', DE', HL').
 ;                    Preserves DE, HL. A second byte that follows the first
 ;                    at once is kept and returned by the next call without
-;                    touching the port.
-;   uart_read_raw    The same routine: there are no receive errors to latch.
-;   uart_ready       CF=1 when a kept byte is waiting. CF=0 says nothing
-;                    about the ESP: poll with uart_read. Destroys A.
+;                    touching the port; one with a bad stop bit is dropped
+;                    and latched, and the first is still returned.
+;   uart_read_raw    As uart_read without the uart_rx_errors gate. The read
+;                    that finds a bad stop bit still reports no byte.
+;   uart_ready       CF=1 when a kept byte is waiting and no error is latched.
+;                    CF=0 says nothing about the ESP: poll with uart_read.
+;                    Destroys A.
 ;   uart_write       A = byte. Always CF=0. Preserves A, BC, DE, HL.
-;   uart_flush       Read and discard until a read times out: CF=0. CF=1 when
-;                    UART_FLUSH_MAX bytes went by and more keep coming.
-;                    Destroys A, BC and the alternate set.
+;   uart_flush       Clear uart_rx_errors, then read and discard, bytes with
+;                    a bad stop bit included, until a read times out: CF=0.
+;                    CF=1 when UART_FLUSH_MAX bytes went by and more keep
+;                    coming. Destroys A, BC and the alternate set.
 ;   uart_read_block  HL = buffer, B = room (1..255, 0 = 256). Stores bytes
-;                    until the buffer is full or a read times out. Out: HL =
+;                    until the buffer is full or a read reports nothing (a
+;                    timeout, a bad stop bit, errors latched). Out: HL =
 ;                    next free position, D = room left, CF=1 buffer full,
 ;                    CF=0 otherwise. Destroys A, BC, E and the alternate set.
 
@@ -58,21 +77,32 @@ UART_AY_PORT_A      EQU 0x0E
 UART_MIXER_VALUE    EQU 0xFC
 UART_LINE_IDLE      EQU 0xFE    ; TX high, CTS high: the ESP holds its data
 UART_LINE_LISTEN    EQU 0xFA    ; TX high, CTS low: the ESP may send
-; Delay count per bit: 54 = 2400, 25 = 4800, 11 = 9600 baud.
+; Delay count per bit: 11 = 9600 baud, the only rate the tests check. 25
+; gives 4800 and 54 gives 2400, but the late window after a timeout
+; (UART_LATE_POLLS) is 1.5 bit times only at 9600: measure before using them.
 UART_BIT_DELAY      EQU 11
 UART_START_POLLS    EQU 240     ; 54 T-states each, CTS low
 UART_LATE_POLLS     EQU 13      ; 42 T-states each, CTS high: 1.5 bit times
 UART_FLUSH_MAX      EQU 2048    ; over two seconds of data at 9600 baud
+UART_RX_FRAMING     EQU 0x40    ; uart_rx_errors: a stop bit read low, as on the Next
 
-uart_init:
-    xor a
-    ld (uart_second_avail), a
-    di                          ; a handler must not split select and data
+uart_init_keep_mixer:
     ld bc, UART_AY_REGISTER
     ld a, UART_AY_MIXER
+    di                          ; a handler must not split select and data
     out (c), a
-    ld b, 0xBF                  ; UART_AY_DATA
+    in a, (c)                   ; the mixer as the program left it
+    or 0x40                     ; port A as output
+    jr uart_init_mixer
+
+uart_init:
+    ld bc, UART_AY_REGISTER
+    ld a, UART_AY_MIXER
+    di                          ; a handler must not split select and data
+    out (c), a
     ld a, UART_MIXER_VALUE
+uart_init_mixer:
+    ld b, 0xBF                  ; UART_AY_DATA
     out (c), a
     ld b, 0xFF
     ld a, UART_AY_PORT_A
@@ -80,10 +110,16 @@ uart_init:
     ld b, 0xBF
     ld a, UART_LINE_IDLE        ; a known level, whatever the latch held
     out (c), a
+    xor a
+    ld (uart_second_avail), a
+    ld (uart_rx_errors), a
     ei
     ret
 
 uart_ready:
+    ld a, (uart_rx_errors)
+    or a
+    ret nz                      ; CF=0 while errors are latched
     ld a, (uart_second_avail)
     add a, 0xFF                 ; CF=1 when not zero
     ret
@@ -148,6 +184,9 @@ uart_write_next:
     ret
 
 uart_read:
+    ld a, (uart_rx_errors)
+    or a
+    ret nz                      ; CF=0: no byte from a damaged stream
 uart_read_raw:
     push hl
     ld hl, uart_second_avail
@@ -200,6 +239,7 @@ uart_read_late:
 uart_read_late_next:
     dec l
     jr nz, uart_read_late
+uart_read_none:
     pop de
     pop hl
     xor a                       ; CF=0
@@ -274,7 +314,7 @@ uart_read_byte:
     ld h, d
     ld l, e
 
-    ld bc, 0x0007
+    ld bc, 0x0003               ; to the middle of the stop bit
     or a
     sbc hl, bc
 
@@ -285,6 +325,9 @@ uart_read_stop_delay:
     jr nz, uart_read_stop_delay
 
     ld bc, UART_AY_REGISTER
+    in a, (c)                   ; the stop bit
+    and 0x80
+    jr z, uart_read_bad_stop
     add hl, de
     add hl, de
     add hl, de
@@ -307,6 +350,13 @@ uart_read_done:
     pop hl
     ei
     ret
+
+uart_read_bad_stop:
+    ld a, UART_RX_FRAMING
+    ld (uart_rx_errors), a
+    exx
+    pop af                      ; the byte is not whole: dropped
+    jp uart_read_none
 
 uart_read_second_found:
     in a, (c)
@@ -354,19 +404,43 @@ uart_read_second_zero:
     ex af, af'
     jp uart_read_second_tune
 uart_read_second_done:
+    ex af, af'                  ; keep the byte while its stop bit comes
+    ld h, d
+    ld l, e
+uart_read_second_stop:
+    dec hl
+    ld a, h
+    or l
+    jr nz, uart_read_second_stop
+    in a, (c)
+    and 0x80
+    jr z, uart_read_second_bad
+    ex af, af'
     ld hl, uart_second_avail
     ld (hl), 1
     inc hl
     ld (hl), a                  ; uart_second_byte
     jr uart_read_done
+uart_read_second_bad:
+    ld a, UART_RX_FRAMING       ; the first byte is whole and is returned
+    ld (uart_rx_errors), a
+    jr uart_read_done
 
 uart_flush:
+    xor a
+    ld (uart_rx_errors), a
     ld bc, UART_FLUSH_MAX + 1   ; the extra read tells whether more is coming
 uart_flush_next:
     push bc
-    call uart_read
+    call uart_read_raw
     pop bc
-    ret nc                      ; the line went quiet
+    jr c, uart_flush_byte
+    ld a, (uart_rx_errors)
+    or a
+    ret z                       ; the line went quiet: CF=0
+    xor a
+    ld (uart_rx_errors), a      ; a damaged byte goes like the others
+uart_flush_byte:
     dec bc
     ld a, b
     or c

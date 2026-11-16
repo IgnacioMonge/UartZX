@@ -17,7 +17,7 @@ BAUDS = (9600, 57600, 230400, 1152000, 2000000)
 PARTS = (
     ("next.inc",)
     + tuple(f"next_baud_{baud}.inc" for baud in BAUDS)
-    + ("send.inc", "next_vars.inc")
+    + ("next_write_block.inc", "send.inc", "next_vars.inc")
 )
 # System clock per video timing (NextReg 0x11), from the core's nextreg.txt.
 CLOCKS = (28000000, 28571429, 29464286, 30000000, 31000000, 32000000, 33000000, 27000000)  # fmt: skip
@@ -40,6 +40,9 @@ class NextUart:
         self.overflow = self.framing = False
         self.tx_done = deque()  # completion times of queued TX bytes
         self.tx_stuck = False
+        self.byte = BYTE  # T-states a TX byte takes on the wire
+        self.stick_at = None  # TX sticks once this many bytes are sent
+        self.full_seen = 0  # status reads that found the TX FIFO full
         self.sent = bytearray()
         self.errors = []
 
@@ -79,6 +82,7 @@ class NextUart:
                 | (0x01 if self.fifo else 0)
             )
             self.overflow = self.framing = False
+            self.full_seen += bool(status & 0x02)
             return status
         if port == 0x143B:
             if not self.fifo:
@@ -98,8 +102,9 @@ class NextUart:
                 self.errors.append("write to a full TX FIFO")
             else:
                 self.sent.append(value)
+                self.tx_stuck |= len(self.sent) == self.stick_at
                 start = self.tx_done[-1] if self.tx_done else self.clock()
-                self.tx_done.append(start + BYTE)
+                self.tx_done.append(start + self.byte)
         elif port == 0x143B:
             if value & 0x80:
                 self.divisor = (self.divisor & 0x7F) | (value & 0x7F) << 7
@@ -309,10 +314,16 @@ class Next(unittest.TestCase):
 
     def test_write_waits_for_room(self):
         d = self.d
-        data = bytes(range(100))  # more than the 64-byte TX FIFO
+        # A write takes 152 T-states and a byte leaves every 304, so the TX
+        # FIFO gains one byte every two writes: 160 writes fill it.
+        data = bytes(range(160))
         for byte in data:
-            d.call("uart_write", a=byte, de=0x2222)
-            self.assertEqual((d.carry, d.m.de), (False, 0x2222))
+            d.call("uart_write", a=byte, bc=0x1111, de=0x2222, hl=0x3333)
+            self.assertEqual(
+                (d.carry, d.m.a, d.m.bc, d.m.de, d.m.hl),
+                (False, byte, 0x1111, 0x2222, 0x3333),
+            )
+        self.assertGreater(self.uart.full_seen, 0, "the FIFO never filled")
         self.assertEqual(self.uart.sent, data)
 
     def test_write_fails_closed(self):
@@ -369,7 +380,9 @@ class Next(unittest.TestCase):
         d.call("uart_esp_reset")
         (start, hold), (end, release) = self.uart.reset
         self.assertEqual((hold, release, d.frames), (0x80, 0x00, 25))
-        self.assertGreater(end - start, 24 * Driver.FRAME)
+        # Called as a frame begins: the hold lasts 25 frames, give or take the
+        # few T-states of the routine itself.
+        self.assertLess(abs(end - start - 25 * Driver.FRAME), 100)
         self.assertTrue(d.m.iff1)
 
     def test_send_helpers(self):
@@ -377,6 +390,89 @@ class Next(unittest.TestCase):
         d.m.set_memory_block(0xC100, b"AT+GMR\r\n\0")
         d.call("uart_write_string", hl=0xC100)
         self.assertEqual((d.carry, self.uart.sent), (False, b"AT+GMR\r\n"))
+
+    def test_block_send_holds_input_back(self):
+        # uart_write_block reads no input. Both FIFOs start empty and the ESP
+        # sends at the same rate. At 115200 baud and 3.5 MHz the line paces
+        # the send and 575 bytes fill the RX FIFO. At 2000000 baud and 28 MHz,
+        # 140 T-states a byte, the send loop is the slower side and 329 do.
+        # uart_write_block_fast keeps up with that line: 573.
+        for routine, byte, length, lost in (
+            ("uart_write_block", BYTE, 575, False),
+            ("uart_write_block", BYTE, 576, True),
+            ("uart_write_block", 140, 329, False),
+            ("uart_write_block", 140, 330, True),
+            ("uart_write_block_fast", 140, 573, False),
+            ("uart_write_block_fast", 140, 574, True),
+        ):
+            with self.subTest(routine=routine, byte=byte, length=length):
+                uart = NextUart()
+                uart.byte = byte
+                d = Driver(PARTS, uart)
+                uart.feed(bytes(1024), spacing=byte)
+                d.call(routine, hl=BUFFER, bc=length)
+                self.assertFalse(d.carry)
+                self.assertEqual(uart.overflow or self.errors(d) == OVERFLOW, lost)
+                self.assertEqual(uart.errors, [])
+
+    def block_send(self, routine, length, setup=None):
+        """Send `length` bytes from BUFFER with `routine` on a fresh UART."""
+        uart = NextUart()
+        d = Driver(PARTS, uart)
+        data = bytes((7 * i + 3) & 0xFF for i in range(length))
+        d.m.set_memory_block(BUFFER, data)
+        if setup:
+            setup(uart, d)
+        d.io = 0
+        took = d.call(routine, hl=BUFFER, bc=length)
+        self.assertEqual(uart.errors, [])
+        result = (
+            d.carry, d.m.hl - BUFFER, d.m.bc, bytes(uart.sent),
+            d.byte("uart_tx_failed"), self.errors(d), d.io == 0,
+        )  # fmt: skip
+        return result, took, uart
+
+    def test_write_block_fast_matches_send_inc(self):
+        def framing(uart, d):  # a receive error halfway through
+            uart.feed([None], spacing=0)
+            uart.arrivals[0] = (150 * BYTE, None)
+
+        def stick(uart, d):  # the transmitter dies after 100 bytes
+            uart.stick_at = 100
+
+        def latched(uart, d):  # an earlier write had failed
+            d.m.memory[d.symbols["uart_tx_failed"]] = 1
+
+        for name, length, setup in (
+            ("empty", 0, None),
+            ("empty, failure latched", 0, latched),
+            ("waits for room", 300, None),
+            ("receive error", 300, framing),
+            ("transmitter dies", 300, stick),
+            ("failure latched", 300, latched),
+        ):
+            with self.subTest(name):
+                slow, _, uart = self.block_send("uart_write_block", length, setup)
+                fast, _, _ = self.block_send("uart_write_block_fast", length, setup)
+                self.assertEqual(fast, slow)
+                if name == "waits for room":
+                    self.assertGreater(uart.full_seen, 0)
+                    self.assertEqual(slow[:4], (False, 300, 0, slow[3]))
+                if name == "receive error":
+                    self.assertEqual(slow[5], FRAMING)
+                if name == "transmitter dies":
+                    self.assertEqual(slow[:3], (True, 100, 200))
+                if name == "failure latched":
+                    self.assertEqual(slow[:4] + slow[6:], (True, 0, 300, b"", True))
+
+    def test_write_block_fast_cost(self):
+        def fast_line(uart, d):  # the FIFO never fills: the loop alone
+            uart.byte = 50
+
+        _, slow, _ = self.block_send("uart_write_block", 1024, fast_line)
+        _, fast, _ = self.block_send("uart_write_block_fast", 1024, fast_line)
+        self.assertEqual(slow // 1024, 218)
+        self.assertEqual(fast // 1024, 101)
 
 
 if __name__ == "__main__":

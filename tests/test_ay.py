@@ -6,12 +6,13 @@ the 48K and the 128K clocks.
 import unittest
 from itertools import product
 
-from ay_model import T_128, T_3_5, AyUart
+from ay_model import BAD_STOP, T_128, T_3_5, AyUart
 from harness import Driver
 
 PARTS = ("ay.inc", "ay_speed.inc", "send.inc", "ay_vars.inc")
 BUFFER = 0xC000
 IDLE = 0xFE  # port A with TX and CTS high
+FRAMING = 0x40  # uart_rx_errors after a stop bit read low
 COMMAND = b"\r\nAT+UART_DEF=9600,8,1,0,2\r\n"
 
 
@@ -57,6 +58,18 @@ class Ay(unittest.TestCase):
         self.assertTrue(d.m.iff1)
         self.assertLess(took, 200)  # it does not wait
 
+    def test_init_keep_mixer(self):
+        d = self.d
+        uart = self.esp()
+        uart.regs[7] = 0x38  # tones A, B and C on, noise off: a tune playing
+        uart.regs[14] = 0x00
+        d.m.memory[d.symbols["uart_second_avail"]] = 1
+        took = d.call("uart_init_keep_mixer")
+        self.assertEqual((uart.regs[7], uart.regs[14]), (0x78, IDLE))
+        self.assertEqual(d.byte("uart_second_avail"), 0)
+        self.assertTrue(d.m.iff1)
+        self.assertLess(took, 200)
+
     def test_write(self):
         d = self.d
         uart = self.esp()
@@ -82,7 +95,7 @@ class Ay(unittest.TestCase):
         self.assertFalse(d.carry)
         self.assertEqual((d.m.de, d.m.hl, uart.regs[14]), (0x1234, 0x5678, IDLE))
         self.assertTrue(d.m.iff1)
-        self.assertEqual(took, 13720)  # 3.9 ms
+        self.assertEqual(took, 13742)  # 3.9 ms
         d.device = NoAy()  # no AY at all: the bus floats high
         self.assertIsNone(self.read())
 
@@ -143,10 +156,59 @@ class Ay(unittest.TestCase):
         uart.feed(b"U")
         took = d.call("uart_read")  # false starts of a second byte
         self.assertEqual((d.carry, d.m.a), (True, ord("U")))
-        self.assertLess(took, 5343 + 40 * 62)
+        self.assertLess(took, 5495 + 40 * 62)
         self.assertEqual((uart.regs[14], d.byte("uart_second_avail")), (IDLE, 0))
         self.assertTrue(d.m.iff1)
         self.assertIsNone(self.read())  # and of a first one
+
+    def test_bad_stop_bit_stops_reception_until_flush(self):
+        d = self.d
+        for clock in (T_3_5, T_128):
+            for error in (-0.025, 0, 0.025):
+                uart = self.esp(bit=clock * (1 + error))
+                uart.feed([0x41 | BAD_STOP])
+                d.call("uart_read", de=0x1234, hl=0x5678)
+                self.assertFalse(d.carry, (clock, error))
+                self.assertEqual(d.byte("uart_rx_errors"), FRAMING)
+                self.assertEqual((d.m.de, d.m.hl, uart.regs[14]), (0x1234, 0x5678, IDLE))
+                self.assertTrue(d.m.iff1)
+                uart.feed(b"K")
+                d.io = 0
+                for routine in ("uart_read", "uart_ready"):
+                    d.call(routine)
+                    self.assertFalse(d.carry)
+                self.assertEqual(d.io, 0, "a latched driver must not touch the port")
+                d.call("uart_read_raw")  # the raw read carries on
+                self.assertEqual((d.carry, d.m.a), (True, ord("K")))
+                d.m.memory[d.symbols["uart_second_avail"]] = 1  # kept by a raw read
+                d.call("uart_ready")
+                self.assertFalse(d.carry)
+                d.m.memory[d.symbols["uart_second_avail"]] = 0
+                d.call("uart_flush")
+                self.assertEqual((d.carry, d.byte("uart_rx_errors")), (False, 0))
+                uart.feed(b"Q")
+                self.assertEqual(self.read(), ord("Q"))
+
+    def test_bad_stop_bit_on_the_second_byte(self):
+        d = self.d
+        for clock in (T_3_5, T_128):
+            for error in (-0.025, 0, 0.025):
+                uart = self.esp(bit=clock * (1 + error), flow=False)
+                uart.feed([0x41, 0xA5 | BAD_STOP], delay=500)
+                self.assertEqual(self.read(), 0x41, (clock, error))  # it was whole
+                self.assertEqual(d.byte("uart_second_avail"), 0)
+                self.assertEqual(d.byte("uart_rx_errors"), FRAMING)
+                self.assertIsNone(self.read())
+
+    def test_flush_discards_damaged_bytes(self):
+        d = self.d
+        uart = self.esp()
+        uart.feed([0x41, 0x42 | BAD_STOP, 0x43, 0x44 | BAD_STOP])
+        d.call("uart_flush")
+        self.assertEqual((d.carry, d.byte("uart_rx_errors")), (False, 0))
+        self.assertFalse(uart.queue)
+        uart.feed(b"K")
+        self.assertEqual(self.read(), ord("K"))
 
     def test_ready_only_knows_the_kept_byte(self):
         d = self.d
@@ -226,9 +288,9 @@ class Ay(unittest.TestCase):
         )
         self.assertEqual(self.read(), ord("y"))
 
-        uart = self.esp(stuck_low=True)  # bounded by the room
+        uart = self.esp(stuck_low=True)  # a dead line gives no bytes
         d.call("uart_read_block", hl=BUFFER, b=0)
-        self.assertEqual((d.carry, d.m.d), (True, 0))
+        self.assertEqual((d.carry, d.m.hl, d.byte("uart_rx_errors")), (False, BUFFER, FRAMING))
 
     def test_esp_set_9600(self):
         d = self.d

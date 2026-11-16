@@ -10,6 +10,7 @@ from collections import deque
 
 T_3_5 = 3_500_000 / 9600  # T-states per bit at 9600 baud, 48K clock
 T_128 = 3_546_900 / 9600  # 128K clock
+BAD_STOP = 0x100  # or-ed into a byte to send: its stop bit is low
 
 
 class AyUart:
@@ -80,9 +81,9 @@ class AyUart:
         for start, byte in reversed(self.frames):
             if start <= now < start + 10 * self.bit:
                 index = int((now - start) / self.bit)
-                return (
-                    0 if index == 0 else 1 if index == 9 else (byte >> (index - 1)) & 1
-                )
+                if index == 9:
+                    return 0 if byte & BAD_STOP else 1
+                return 0 if index == 0 else (byte >> (index - 1)) & 1
             if start + 10 * self.bit <= now:
                 break
         return 1

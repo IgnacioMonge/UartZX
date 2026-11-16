@@ -13,7 +13,7 @@ the applications do not care which one is included.
 |---|---|---|
 | `uart_init` | | Driver ready, failure latches clear |
 | `uart_read` | | CF=1 and A = byte, or CF=0: none waiting, or the stream is damaged |
-| `uart_read_raw` | | As `uart_read`, ignoring earlier receive errors. On the Next, the read that latches a new error reports no byte |
+| `uart_read_raw` | | As `uart_read`, ignoring earlier receive errors. On the Next and the AY, the read that latches a new error reports no byte |
 | `uart_ready` | | CF=1 when `uart_read` would return a byte; nothing is consumed |
 | `uart_write` | A = byte | CF=0 sent, CF=1 not sent. Preserves A, BC, DE, HL |
 | `uart_flush` | | Discards pending input and clears receive errors. CF=1 (Next, AY): it gave up with input still arriving, and on the Next reads stay refused until a flush completes |
@@ -25,7 +25,7 @@ the applications do not care which one is included.
 `uart_tx_failed` and later writes are refused until `uart_init`. An
 application that keeps its own fault latch may copy the failure there and
 write 0 to `uart_tx_failed`; it then owns the rule that a command is never
-sent with holes. On the Next it may likewise read through `uart_read_raw`,
+sent with holes. On the Next and the AY it may likewise read through `uart_read_raw`,
 move `uart_rx_errors` into its latch and write 0 to it; it then owns the
 rule that a stream with a hole is never delivered as whole. No routine
 uses IX, IY or the alternate registers unless its header says so. divMMC and
@@ -140,6 +140,8 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
   16..14. Bit 5 is ignored by the core (every application writes `#30`).
 - **Divisor** = system clock / baud. The clock depends on the video timing in
   NextReg `#11`: seven VGA settings from 28 to 33 MHz and 27 MHz for HDMI.
+- **Reset.** NextReg `#02` bit 7 holds the ESP and the expansion bus in
+  reset, so `uart_esp_reset` also resets any device on the bus.
 
 ### Feature ledger
 
@@ -157,7 +159,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | One-byte RX cache, peek with value | BridgeZXadv | Dropped | The FIFO keeps the byte; `uart_ready` is status only |
 | TX refuses while RX errors are latched | BridgeZXadv, NetChessZX (C layer) | Dropped | RX health does not decide whether a byte can be queued; the application can test `uart_rx_errors` |
 | Bounded TX wait with a failure latch | SpecTalkZX, BitStream | Taken, 4096 samples | Over ten byte times at 9600 baud and 28 MHz (the NetManZX sizing). 256 samples (BridgeZXadv, NetChessZX) are under one byte there |
-| RX moved into a ring during a TX wait | SpecTalkZX, BitStream | Dropped | The wait is one byte time and the RX FIFO holds 512 |
+| RX moved into a ring during a TX wait | SpecTalkZX, BitStream | Dropped | The wait is one byte time and the RX FIFO holds 512. A whole `uart_write_block` reads no input. With both FIFOs empty and the ESP sending at the same rate, input is lost past 575 bytes while the line paces the send, as at 115200 baud. When the line outruns the send loop (218 T-states a byte, without the Next's wait states) the limit is about 512 × line T-states per byte / 218: 357 bytes at 230400 baud and 3.5 MHz, 329 at 2000000 baud and 28 MHz. `uart_write_block_fast`, at 101 T-states a byte, keeps up with 2000000 baud at 28 MHz: 573 bytes there. Tested at 115200 baud and 3.5 MHz and at 2000000 baud and 28 MHz. The application splits longer sends and drains between the parts |
 | Baud tables: 115200, 230400, 2000000 | BridgeZXadv | Taken | 115200 in the driver; every other rate is a 16-byte file an application includes only if it uses it |
 | Baud tables: 9600, 57600, 1152000 | NetManZX | Taken | Same |
 | 2000000 baud table | BridgeZXadv and NetManZX disagree | The BridgeZXadv values | Nearest divisors; a test checks every table against the documented clocks |
@@ -176,6 +178,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | 50/60 Hz detection | NetChessZX | Left to the application | Timeout pacing, not a UART matter |
 | Read timeouts counted in frames | NetManZX | Left to the application | Depends on the ROM frame counter and the keyboard |
 | Hardware flow control | none | Not taken | Only issue 4 boards; no application uses it. Backlog |
+| Block send with the status test inline | none | Added as `uart_write_block_fast`, optional file `next_write_block.inc` | 101 T-states a byte instead of 218 through `send.inc`, which at 28 MHz cannot keep up with 2000000 baud. Both counts leave out the Next's wait states. Same checks: a not-full status read that keeps the receive errors before every byte, the wait of `uart_write` on a full FIFO, the failure latch. A test runs both senders through the same five cases and compares every result. External audit |
 
 ### Numbers
 
@@ -190,9 +193,23 @@ a Next adds at 28 MHz.
 
 - The 331 bytes include the 115200 table and two state bytes; each further
   rate adds 16. The 360 of BridgeZXadv include three tables.
+- Nearest divisors still miss the rate. The worst case of each table:
+
+  | Rate | Worst error | Video timing |
+  |---|---|---|
+  | 9600 | −0.02 % | HDMI, 27 MHz |
+  | 57600 | −0.09 % | 29.46 MHz |
+  | 115200 | +0.16 % | 30 MHz |
+  | 230400 | −0.39 % | 28 MHz |
+  | 1152000 | +1.90 % | HDMI, 27 MHz |
+  | 2000000 | −3.57 % | HDMI, 27 MHz: divisor 14, 1,928,571 baud |
+
+  The tests do not show whether the ESP accepts the 3.57 % at 2000000 baud
+  over HDMI: the UART model does not derive its byte time from the divisor.
 - `uart_write` takes 152 T-states when the FIFO has room.
 - `uart_read_block` stores a byte every 98 T-states while the FIFO has data;
   at 2000000 baud and 28 MHz a byte arrives every 140.
+- `next_write_block.inc` adds 46 bytes.
 - `uart_read_block`, the quiet-window `uart_flush` and the selection
   read-back in `uart_set_baud` are new code.
 
@@ -239,7 +256,8 @@ the three drivers agree on and from the AY-3-8912 register set.
 - **Upstream.** NetManZX's driver comes from netman-zx by Alex Nihirash
   (`drivers/ay.asm`, commit `9cd6173`). It was read to settle what the
   applications changed; it is not redistributed here because that
-  repository publishes no licence.
+  repository publishes no licence. Its timed bit loops are in `src/ay.inc`
+  almost unchanged; the README licence section records what that means.
 
 ### Exceptions to the shared contract
 
@@ -250,8 +268,9 @@ the three drivers agree on and from the AY-3-8912 register set.
   uses the alternate registers. It preserves DE and HL like the others.
 - **Interrupts** are enabled on return from every routine that touches the
   port. A frame interrupt that falls inside one is lost.
-- **`uart_write`** always returns CF=0. There is no `uart_tx_failed` and no
-  `uart_rx_errors`: the port has no status.
+- **`uart_write`** always returns CF=0 and there is no `uart_tx_failed`: the
+  port has no status. `uart_rx_errors` only ever holds `UART_RX_FRAMING`,
+  set by a stop bit that reads low.
 - **`uart_read_block` and `uart_flush`** end with a 3.9 ms timeout instead of
   returning at once.
 - **Placement.** The code and the stack must be in uncontended memory:
@@ -266,11 +285,11 @@ the three drivers agree on and from the AY-3-8912 register set.
 | TX bit loop, 370 T-states, two stop bits | upstream, NetManZX, BitStream | Taken unchanged | 9586 baud on a 128K (0.1 % slow), 9459 at 3.5 MHz (1.5 % slow) |
 | `uart_write` preserves A | BitStream | Taken | Shared contract |
 | `uart_write` returns CF=0 | none | Added | `send.inc` stops on CF=1 |
-| RX sampling loops | upstream, NetManZX, BitStream | Taken unchanged | |
+| RX sampling loops | upstream, NetManZX, BitStream | Taken unchanged up to the eighth data bit | The wait after it is longer, for the stop-bit sample (see below) |
 | 33 T-state delay inside start-bit detection | NetManZX | Dropped | It took the place of a debug border pulse (NetManZX `34c1324`); upstream and BitStream have no delay there. NetManZX has only run on hardware with it, so dropping it rests on the model: the driver accepts bit periods of 354.1 to 382.6 T without it and 358.1 to 386.6 with it; the real ones are 364.6 and 369.5, so without it the smaller margin grows from 1.8 % to 2.9 % (3.5 MHz) and from 3.1 % to 3.5 % (128K) |
 | Second byte captured after CTS is raised | upstream, NetManZX, BitStream | Taken | The ESP may already have started it |
 | A false start of the second byte goes back to waiting without counting | upstream, NetManZX, BitStream | Fixed: it uses up a poll | A line that keeps pulsing held `uart_read` for ever with interrupts off. No bytes, and no change for a real byte. Found by two external audits |
-| CTS raised again on a timeout | NetManZX | Taken, followed by `UART_LATE_POLLS` samples (1.5 bit times) | BitStream leaves CTS low, so the ESP sends into nothing; upstream raises it and then still waits for a second byte. NetManZX, and this driver before the fix, return at once, so a byte the ESP starts just before it sees CTS rise is lost, or read from its middle by the next call: 8 of 1988 reply timings in the model, measured on that earlier version. A byte caught by the late samples accepts bit periods of 355.5 to 388 T. `UART_START_POLLS` drops from 250 to 240 to keep the timeout at 3.9 ms. Found by an independent review |
+| CTS raised again on a timeout | NetManZX | Taken, followed by `UART_LATE_POLLS` samples (1.5 bit times) | BitStream leaves CTS low, so the ESP sends into nothing; upstream raises it and then still waits for a second byte. NetManZX, and this driver before the fix, return at once, so a byte the ESP starts just before it sees CTS rise is lost, or read from its middle by the next call: 8 of 1988 reply timings in the model, measured on that earlier version. A byte caught by the late samples accepts bit periods of 352.5 to 386.7 T since the stop-bit check (352.5 to 391.4 T before it, same method). `UART_START_POLLS` drops from 250 to 240 to keep the timeout at 3.9 ms. Found by an independent review |
 | Main register set restored on every exit | NetManZX | Taken | BitStream returns from two exits with the alternate set selected |
 | `uart_read` preserves DE and HL | none | Added | Shared contract. The pushes and pops are outside the timed code |
 | Port value read back and modified | upstream, NetManZX, BitStream | Replaced by two constants | In init, upstream and BitStream read the latch through the data port and NetManZX through the register port, and all three write back what they read, TX low included. `#FE` and `#FA` are the values the read-modify-write produced after any write |
@@ -283,7 +302,8 @@ the three drivers agree on and from the AY-3-8912 register set.
 | Ready by sampling the line | BitStream | Dropped | With CTS high the line is idle; a start bit caught by a sample is already too late to read |
 | Block send with interrupts off throughout, IX as constant | BitStream | Dropped | Saves about 4 % per byte; `send.inc` does the job |
 | Drain into the application ring | BitStream | Left to the application | `uart_read_block` is ring-agnostic |
-| Mixer register written as `#FC` | upstream, NetManZX, BitStream | Taken | It rewrites the whole register, tones A and B included. Kept because every application does it; setting bit 6 only is backlog |
+| Mixer register written as `#FC` | upstream, NetManZX, BitStream | Taken in `uart_init` | It rewrites the whole register, tones A and B included. Kept because every application does it. `uart_init_keep_mixer` reads the register back and sets bit 6 only, for programs that play music |
+| Stop bit checked | none | Added | Upstream and both applications store a byte after its eighth data bit, so a line held low read as a run of `#00` bytes. The stop bit is sampled 9.4 to 9.7 bit times after the start edge, as measured in the model, for the first byte and for a second one. A low one drops the byte and latches `UART_RX_FRAMING` in `uart_rx_errors`; reads stay refused until `uart_flush`, as on the Next. A read that gets a byte takes 152 T-states more, one that times out 22 more, for the gate. With `uart_init_keep_mixer` and the gate in `uart_ready` the driver grew by 80 bytes. External audit |
 | Interrupt state preserved | none | Not taken | Every source returns with interrupts enabled |
 
 ### The speed command never reached a factory ESP
@@ -307,16 +327,21 @@ T-states measured by the tests on the Python `z80` emulator.
 
 | | Canonical | Copied NetManZX driver |
 |---|---|---|
-| Size | 396 bytes, plus 360 for `ay_speed.inc` | 656 bytes |
+| Size | 476 bytes, plus 360 for `ay_speed.inc` | 656 bytes |
 | TX bit | 370 | 370 |
 | `uart_write` | 4233 | not measured |
-| `uart_read`, byte | 5343 | not measured |
-| `uart_read`, timeout | 13720 (3.9 ms) | not measured |
-| Bit period accepted | 354.1 to 382.6 | 358.1 to 386.6 |
+| `uart_read`, byte | 5495 | not measured |
+| `uart_read`, timeout | 13742 (3.9 ms) | not measured |
+| Bit period accepted | 353.9 to 383.6 | 358.1 to 386.6 |
 | Speed command bit | 30 | 56 |
 
 - `tests/test_ay.py` reads at both clocks with the ESP 2.5 % fast and 2.5 %
   slow, for nine positions of the start edge.
+- The accepted bit period is now the range that three cases all pass: one
+  byte at nine positions of the start edge (353.9 to 387.4 T), a byte pair
+  at seven phases (353.5 to 383.6 T) and a byte caught by the late samples
+  (352.5 to 386.7 T). Before the stop-bit check the same method gave 354.1
+  to 383.3 T. The NetManZX figure comes from the earlier method.
 - The whole speed command takes 8805 T-states.
 
 ### What adopting it changes in each application
@@ -325,8 +350,12 @@ T-states measured by the tests on the Python `z80` emulator.
   driver. Its init calls `uart_init` and keeps the 255-frame wait for the
   ESP; it sends no speed command, so the ESP must already run at 9600 baud
   with CTS flow control, as it had to before. `_baud` and the second-byte
-  variables are gone; `uartRead` keeps DE and HL.
+  variables are gone; `uartRead` keeps DE and HL. After a byte with a bad
+  stop bit `uart_read` reports nothing until `uart_flush`: its read loop
+  must call `uart_flush` when `uart_rx_errors` is set, as on the Next.
 - **BitStream:** `ay_uart_ready` and `ay_uart_ready_fast` no longer sample
   the line: its drain polls with `uart_read` or uses `uart_read_block`.
   `ay_uart_send_block` becomes `uart_write_block`. The 50-frame wait and the
-  speed command leave init. Its C wrappers stay on its side.
+  speed command leave init. Its C wrappers stay on its side. Its drain
+  must call `uart_flush` when `uart_rx_errors` is set, or reads stay
+  refused after a byte with a bad stop bit; `uart_read_raw` skips that.

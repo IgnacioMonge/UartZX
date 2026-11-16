@@ -58,13 +58,14 @@
 ;                    are latched. Out: HL = next free position, D = room
 ;                    left, CF=1 buffer full, CF=0 otherwise. Destroys A, BC,
 ;                    E. About 98 T-states per byte while the FIFO has data.
-;   uart_esp_reset   Hold the ESP in reset for UART_RESET_FRAMES frames. Needs
-;                    interrupts enabled on entry and returns with them
-;                    enabled. It counts HALTs: with another interrupt source
-;                    enabled besides the frame one the hold is shorter. The
-;                    caller waits for the ESP to boot, then calls uart_flush,
-;                    or uart_init if a write had failed (only it clears
-;                    uart_tx_failed and empties the TX FIFO).
+;   uart_esp_reset   Hold the ESP in reset for UART_RESET_FRAMES frames. The
+;                    same NextReg bit resets the expansion bus: a device on it
+;                    is reset too. Needs interrupts enabled on entry and
+;                    returns with them enabled. It counts HALTs: with another
+;                    interrupt source enabled besides the frame one the hold
+;                    is shorter. The caller waits for the ESP to boot, then
+;                    calls uart_flush, or uart_init if a write had failed
+;                    (only it clears uart_tx_failed and empties the TX FIFO).
 ;                    Destroys A, BC, D.
 ;   uart_latch_rx_error  A = status byte. Adds its error bits to
 ;                    uart_rx_errors. Preserves everything, flags included.
@@ -92,7 +93,7 @@ UART_FRAME_RESET    EQU 0x98    ; empty the FIFOs, 8N1
 UART_FRAME_8N1      EQU 0x18    ; 8N1, no hardware flow control
 NEXTREG_SELECT      EQU 0x243B
 NEXTREG_DATA        EQU 0x253B
-NEXTREG_RESET       EQU 0x02    ; bit 7 holds the ESP in reset
+NEXTREG_RESET       EQU 0x02    ; bit 7 holds the ESP and the expansion bus in reset
 NEXTREG_VIDEO_TIMING EQU 0x11
 
 ; Samples of a full TX FIFO before uart_write gives up: over ten byte times

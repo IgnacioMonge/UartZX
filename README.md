@@ -9,8 +9,8 @@ backends, the same entry points on all of them.
 | Backend | Hardware | Files | Size |
 |---|---|---|---|
 | divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. 115200 baud, fixed by the hardware | `src/divmmc.inc`, `src/divmmc_vars.inc` | 157 bytes |
-| Next | ZX Spectrum Next internal UART (`#133B`..`#163B`). 115200 baud by default | `src/next.inc`, `src/next_vars.inc`, optional `src/next_baud_*.inc` | 331 bytes |
-| AY | Bit-banged serial on I/O port A of the AY-3-8912. 9600 baud | `src/ay.inc`, `src/ay_vars.inc`, optional `src/ay_speed.inc` | 396 bytes |
+| Next | ZX Spectrum Next internal UART (`#133B`..`#163B`). 115200 baud by default | `src/next.inc`, `src/next_vars.inc`, optional `src/next_baud_*.inc` and `src/next_write_block.inc` | 331 bytes |
+| AY | Bit-banged serial on I/O port A of the AY-3-8912. 9600 baud | `src/ay.inc`, `src/ay_vars.inc`, optional `src/ay_speed.inc` | 476 bytes |
 
 Every backend offers the same routines:
 
@@ -39,11 +39,22 @@ using a backend: they are not identical. In particular:
 - **Next:** receive errors (FIFO overflow, framing) stop `uart_read` until
   `uart_flush`, so a stream with a hole is never handed over as whole.
   `uart_set_baud` and the optional tables change the rate; `uart_esp_reset`
-  pulses the ESP reset line.
+  pulses the reset line of the ESP, which also resets the expansion bus.
+  `uart_write_block` reads no input while it sends: at the same rate both
+  ways, a send longer than 575 bytes can overflow the RX FIFO at 115200
+  baud, and a shorter one at faster rates (329 bytes at 2000000 baud and
+  28 MHz), so split long sends and drain input between the parts.
+  `uart_write_block_fast` (`src/next_write_block.inc`, optional) does the
+  same job with the same checks in 101 T-states a byte instead of 218,
+  counted without the Next's wait states.
 - **AY:** sending and receiving run with interrupts off and return with them
   enabled; `uart_read` waits up to 3.9 ms; the code and the stack must be in
   uncontended memory; `uart_ready` only knows about a byte already captured.
-  The ESP must already run at 9600 baud with CTS flow control.
+  A byte whose stop bit reads low stops reception until `uart_flush`, as a
+  framing error does on the Next. `uart_init` rewrites the whole mixer
+  register; `uart_init_keep_mixer` only makes port A an output, so music
+  keeps its tone and noise settings. The ESP must already run at 9600 baud
+  with CTS flow control.
   `uart_esp_set_9600` (`src/ay_speed.inc`) sets that, **persistently**: it
   rewrites the ESP's stored configuration, which then applies to every other
   interface the module is plugged into.
@@ -143,7 +154,8 @@ python -m unittest discover tests
 ```
 
 Needs `sjasmplus` and `z88dk-z80asm` on the PATH and the Python `z80`
-package (`pip install z80==1.2.0`).
+package (`pip install z80==1.2.0`). Last checked with sjasmplus 1.23.1 and
+z88dk-z80asm build 24860-762578732-20260915.
 
 - `test_assembly.py`: both assemblers produce the same bytes for each
   backend.
@@ -151,7 +163,8 @@ package (`pip install z80==1.2.0`).
   against a UART model built from the HDL of its hardware. They check the
   register contract, T-state costs, the failure latches, error handling, and
   that no byte is written to a busy or full transmitter.
-- `test_readme.py`: the example below "How to use it" assembles and runs.
+- `test_readme.py`: both examples under "How to use it" assemble and run,
+  the z88dk one with its code and state linked to separate addresses.
 - `test_ay.py`: the AY driver against a model of the AY port and an ESP at
   9600 baud. Every bit sent is decoded and every bit received is sampled in
   emulated T-states, at the 48K and 128K clocks and with the ESP 2.5 % off.
@@ -169,3 +182,11 @@ package (`pip install z80==1.2.0`).
 
 [MIT](LICENSE): use it, change it and ship it in anything, keeping the
 copyright notice.
+
+One exception to check before relying on that: the timed bit loops in
+`src/ay.inc` come, almost unchanged, from
+[netman-zx](https://github.com/nihirash/netman-zx) by Alex Nihirash, through
+NetManZX. netman-zx publishes no licence: on 2026-11-16 it had no licence
+file, and its latest commit, `9cd6173`, is the one compared here. No licence
+or permission from its author for those loops is recorded in this
+repository.

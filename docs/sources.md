@@ -20,12 +20,33 @@ Also read, and not redistributed:
 
 - netman-zx by Alex Nihirash, commit `9cd6173`: `drivers/ay.asm`, the origin
   of the NetManZX AY driver, was read in full; it also has `drivers/zxuno.asm`
-  and `drivers/next.asm`. Its repository publishes no licence.
+  and `drivers/next.asm`. Its repository publishes no licence; on
+  2026-11-16 it still had none, and `9cd6173` was its latest commit.
 - ZX-Uno core (`mcleod-ideafix/zxuno_spectrum_core`): `common/zxunouart.v`,
   `common/uart.v`.
 - divTIESUS CPLD (`anarsoul/divtiesus_maple`): `cpld/`.
 - ZX Spectrum Next core (`SpectrumNext/ZX_Spectrum_Next_FPGA`):
   `cores/zxnext/src/serial/uart.vhd`, `ports.txt`, `nextreg.txt`.
+
+The revisions of the hardware sources read on 2026-11-14 were not recorded.
+On 2026-11-16 the hardware facts below were checked again at these
+revisions:
+
+| Source | Revision | Files, with the commit that last changed them |
+|---|---|---|
+| ZX Spectrum Next core, `master` | `b047011`, core 3.02.03, 2025-11-06 | `cores/zxnext/src/serial/uart.vhd` `c308f93`, `cores/zxnext/ports.txt` `e4d8961`, `cores/zxnext/nextreg.txt` `9eaa35d` |
+| ZX-Uno core, `master` | `6302d3b`, 2020-08-22 | `common/zxunouart.v`, `common/uart.v`: `5664e74` |
+| divTIESUS CPLD, `master` | `77932b8`, 2025-09-24 | `cpld/`: `77932b8` |
+
+- Next: 512-byte RX and 64-byte TX FIFOs; the status bits, with overflow
+  and framing cleared by a read; select bits 6 and 4; frame bit 7 empties
+  the FIFOs; divisor = system clock / baud; the NextReg `#11` clocks; NextReg
+  `#02` bit 7 resets the ESP and the expansion bus.
+- ZX-Uno: the status byte is `{data_received, txbusy, 6'h00}`, a data write
+  while TX is busy is ignored, and `uart.v` fixes the rate at 115200 baud
+  (`BPS`).
+- divTIESUS: registers `#C6` (data) and `#C7` (status), and the same
+  `zxunouart.v` apart from its clock inputs.
 
 Not compared: the C layer behind NetChessZX's `uart.h` and the receive loop
 BridgeZX inlines in its `net.asm`. Both are application code built on the

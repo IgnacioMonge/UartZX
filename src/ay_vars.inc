@@ -7,3 +7,7 @@ uart_second_avail:
     defb 0
 uart_second_byte:
     defb 0
+; UART_RX_FRAMING after a stop bit read low. Cleared by uart_flush and
+; uart_init.
+uart_rx_errors:
+    defb 0

@@ -19,6 +19,7 @@ BACKENDS = {
         "next_baud_230400.inc",
         "next_baud_1152000.inc",
         "next_baud_2000000.inc",
+        "next_write_block.inc",
         "send.inc",
         "next_vars.inc",
     ),

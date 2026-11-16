@@ -32,8 +32,8 @@ from its first release.
   `uart_rx_errors` into it and read through `uart_read_raw`, taking over
   the rule that a damaged stream is never delivered (`docs/design.md`).
 - Canonical AY bit-banged driver (`src/ay.inc`), redesigned from the
-  NetManZX and BitStream drivers and the netman-zx original: unchanged bit
-  timing, a known port level after `uart_init`, CTS raised on every exit,
+  NetManZX and BitStream drivers and the netman-zx original: unchanged
+  timing of the data bits, a known port level after `uart_init`, CTS raised on every exit,
   `uart_read` that preserves DE and HL, `uart_write` that preserves A and
   returns CF=0, `uart_ready`, `uart_flush` and `uart_read_block`. Init no
   longer waits or sends anything. A line that keeps pulsing after a byte can
@@ -41,6 +41,16 @@ from its first release.
   application drivers. A byte the ESP starts just as a read gives up, up to
   1.5 bit times after CTS rises, is received; the NetManZX driver loses it or
   reads it from its middle on the next call.
+- AY stop-bit check: a received byte whose stop bit reads low is dropped
+  and latches `UART_RX_FRAMING` in `uart_rx_errors`, and `uart_read` then
+  reports nothing until `uart_flush`, as on the Next (`uart_read_raw` opts
+  out). A line held low no longer reads as a run of `#00` bytes.
+- `uart_init_keep_mixer` (AY): sets only the port A bit of the mixer, so
+  music keeps its tone and noise settings; `uart_init` still writes `#FC`.
+- `src/next_write_block.inc` (optional): `uart_write_block_fast`, the Next
+  block send with the same checks as `uart_write_block` in 101 T-states a
+  byte instead of 218, counted without the Next's wait states: on those
+  counts it outruns 2000000 baud at 28 MHz, where 218 does not.
 - `src/ay_speed.inc` (optional): `uart_esp_set_9600` sends the persistent
   `AT+UART_DEF=9600,8,1,0,2` at 115200 baud, as the netman-zx original did.
   The counted loops in NetManZX and BitStream sent it at a rate no ESP reads.
@@ -50,10 +60,24 @@ from its first release.
   (`tests/test_assembly.py`), and the drivers run on the Python `z80`
   emulator: divMMC and Next against UART models built from the HDL
   (`tests/test_divmmc.py`, `tests/test_next.py`), AY against a model of the
-  AY port with every bit placed in T-states (`tests/test_ay.py`). The README
-  example is assembled and run too (`tests/test_readme.py`).
+  AY port with every bit placed in T-states (`tests/test_ay.py`). Both README
+  examples are assembled and run too, the z88dk one with code and state
+  linked to separate addresses (`tests/test_readme.py`). The emulator
+  harness raises the frame interrupt every 69888 T-states and counts its
+  acceptance, so the `uart_esp_reset` hold is checked against 25 real
+  frames.
+- Documented limits: on the Next, `uart_write_block` reads no input while it
+  sends, so at the same rate both ways input is lost past 575 bytes at
+  115200 baud and past 329 at 2000000 baud and 28 MHz; `uart_esp_reset` also
+  resets the expansion bus; `docs/design.md` gives the worst rate error of
+  each divisor table, 3.57 % at 2000000 baud over HDMI. On the AY, 9600 baud
+  is the only rate the tests check.
 - The versions of the NetManZX, NetChessZX, BridgeZX, SpecTalkZX and
-  BitStream drivers the design was compared against (`docs/sources.md`).
+  BitStream drivers the design was compared against, and the revisions of
+  the Next, ZX-Uno and divTIESUS hardware sources the drivers were checked
+  against (`docs/sources.md`).
+- Provenance note in the README: the AY bit loops come from netman-zx,
+  which publishes no licence, and no permission from its author is recorded.
 - MIT licence.
 - Baseline review comparing the application drivers, checked against the
   Spectrum Next port documentation and the ZX-Uno UART HDL
