@@ -43,7 +43,7 @@ def sjasmplus(tmp, name, includes):
 def z80asm(tmp, name, includes):
     lines = [f"    ORG {ORG}"] + [f'    INCLUDE "{path}"' for path in includes]
     return assemble(
-        tmp, name, lines, "z88dk-z80asm", "-b", f"-o={name}.bin", f"{name}.asm"
+        tmp, name, lines, "z88dk-z80asm", f"-I{ROOT / 'src'}", "-b", f"-o={name}.bin", f"{name}.asm"
     )
 
 

@@ -10,6 +10,7 @@ emulated T-states, not hardware.
 
 import unittest
 from collections import deque
+from pathlib import Path
 
 from harness import Driver
 
@@ -385,6 +386,19 @@ class Next(unittest.TestCase):
         self.assertLess(abs(end - start - 25 * Driver.FRAME), 100)
         self.assertTrue(d.m.iff1)
 
+    def test_reset_control_preserves_interrupt_state_without_waiting(self):
+        for enabled in (False, True):
+            uart = NextUart()
+            d = Driver(("next_core.inc", "next_reset.inc", "next_vars.inc"), uart)
+            d.m.iff1 = d.m.iff2 = enabled
+            for routine, value in (("uart_esp_reset_assert", 0x80),
+                                   ("uart_esp_reset_release", 0)):
+                self.assertLess(d.call(routine, iy=0x1234, hl=0x5678), 200)
+                self.assertEqual((uart.reset[-1][1], d.m.iff1, d.m.iff2),
+                                 (value, enabled, enabled))
+                self.assertEqual((d.m.iy, d.m.hl, d.frames), (0x1234, 0x5678, 0))
+            self.assertEqual(uart.errors, [])
+
     def test_send_helpers(self):
         d = self.d
         d.m.set_memory_block(0xC100, b"AT+GMR\r\n\0")
@@ -414,6 +428,45 @@ class Next(unittest.TestCase):
                 self.assertFalse(d.carry)
                 self.assertEqual(uart.overflow or self.errors(d) == OVERFLOW, lost)
                 self.assertEqual(uart.errors, [])
+
+    def test_pending_rx_during_a_512_byte_send(self):
+        uart = NextUart()
+        d = Driver(PARTS, uart)
+        uart.feed(bytes(128))
+        uart.feed(bytes(1024), spacing=BYTE)
+        d.call("uart_write_block", hl=BUFFER, bc=512)
+        self.assertTrue(uart.overflow or d.byte("uart_rx_errors") & OVERFLOW)
+        self.assertEqual(uart.errors, [])
+
+    def test_servicing_rx_between_sends_preserves_pending_input(self):
+        # 115200 at 3.5/28 MHz, 9600 at 3.5 MHz, and 2 Mbaud at 28 MHz.
+        # The latter needs block RX (~98 T/byte); the per-byte guarded read
+        # plus consumer bookkeeping cannot sustain a 140 T/byte input stream.
+        for byte in (304, 2431, 3646, 140):
+            for pending in (128, 480):
+                with self.subTest(byte=byte, pending=pending):
+                    uart = NextUart()
+                    uart.byte = byte
+                    d = Driver(("next_core.inc", "next_read_block.inc",
+                                Path(__file__).with_name("next_duplex.inc"),
+                                "next_vars.inc"), uart)
+                    initial = bytes((7 * i) & 255 for i in range(pending))
+                    arriving = bytes((5 * i + 3) & 255 for i in range(1024))
+                    tx = bytes((3 * i + 1) & 255 for i in range(512))
+                    d.m.set_memory_block(BUFFER, tx)
+                    uart.feed(initial)
+                    uart.feed(arriving, spacing=byte)
+                    d.call("duplex_send", hl=BUFFER, bc=512, de=0xC800)
+                    self.assertEqual((d.carry, bytes(uart.sent)), (False, tx))
+                    end = d.m.de
+                    for _ in range(64):  # finish the bounded incoming test burst
+                        d.call("uart_read_block", hl=end, b=32)
+                        end = d.m.hl
+                        if not (uart.arrivals or uart.fifo):
+                            break
+                    self.assertEqual(bytes(d.m.memory[0xC800:end]), initial + arriving)
+                    self.assertEqual((d.byte("uart_rx_errors"), uart.overflow), (0, False))
+                    self.assertEqual(uart.errors, [])
 
     def block_send(self, routine, length, setup=None):
         """Send `length` bytes from BUFFER with `routine` on a fresh UART."""

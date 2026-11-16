@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness import ORG, ROOT, Driver, assemble
+from harness import ORG, ROOT, Driver, assemble, sjasmplus, z80asm
 from test_divmmc import ZxUnoUart
 from test_next import FRAMING, NextUart
 
@@ -35,6 +35,17 @@ class Esp(ZxUnoUart):
 
 
 class Readme(unittest.TestCase):
+    def test_minimal_examples(self):
+        for backend, block, size in zip(("divmmc", "next", "ay"), examples()[2:], (76, 194, 406)):
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                path = tmp / "minimal.inc"
+                path.write_text(block)
+                image = sjasmplus(tmp, "sj", [path.as_posix()])
+                self.assertEqual(len(image), size)
+                self.assertEqual(image, z80asm(tmp, "z80", [path.as_posix()]))
+        self.assertEqual(len(examples()), 5)
+
     def run_example(self, answer):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "example.asm"
@@ -60,7 +71,7 @@ class Readme(unittest.TestCase):
             tmp = Path(tmp)
             assemble(
                 tmp, "z88dk", layout + [examples()[1]],
-                "z88dk-z80asm", "-b", "-m", "-split-bin", "-o=z88dk.bin", "z88dk.asm",
+                "z88dk-z80asm", f"-I{ROOT / 'src'}", "-b", "-m", "-split-bin", "-o=z88dk.bin", "z88dk.asm",
             )  # fmt: skip
             blocks = {
                 ORG: (tmp / "z88dk_code_user.bin").read_bytes(),

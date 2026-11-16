@@ -9,6 +9,20 @@ from its first release.
 
 ### Added
 
+- Selectable `<backend>_core.inc` and optional ready, flush and block-read
+  includes, plus independent string/block send helpers and AY mixer-preserving
+  initialization. Duplex cores emit 75/192/403 code bytes and 1/2/3 state
+  bytes for divMMC/Next/AY; omitted helpers emit no code or state. Bounded TX,
+  fail-stop, RX error capture and Next's initial 115200 configuration remain
+  mandatory. README tables and separate-object link tests record the costs.
+- Optional Next reset assert/release controls without HALT or boot waits,
+  preserving interrupt enable state; the compatible frame-wait reset shares
+  them. The ESP reset also resets the expansion bus.
+- Integration guide with a tested SpecTalkZX L-to-A adapter, shared TX
+  failure state preserving 0/1/2 transitions and disconnect effects,
+  application-owned raw RX recovery, and a Next RX/TX scheduling budget.
+  Regressions reproduce overflow with 128 RX bytes pending during 512-byte
+  TX and exercise bounded RX service between sends at several line/CPU rates.
 - Canonical divMMC/ZX-Uno driver (`src/divmmc.inc`), redesigned from the five
   application drivers and the ZX-Uno core HDL: lean status-only read,
   non-consuming `uart_ready`, bounded `uart_write` with a failure latch,
@@ -83,3 +97,13 @@ from its first release.
   Spectrum Next port documentation and the ZX-Uno UART HDL
   (`docs/baseline-review.md`).
 - Project rule: every driver is Z80 assembly, with no driver logic in C.
+
+### Changed
+
+- Existing backend and `send.inc` paths now compose the selected source
+  leaves with the same entry points and transport ABI. z88dk full-include
+  builds must add the UartZX `src` directory to their include search path.
+  No consumer is migrated automatically.
+- Full Next code grows by 10 bytes to share interrupt-state-preserving reset
+  controls (339 code + 2 state bytes); minimal builds omit all reset code.
+  Read/write instruction costs and full divMMC/AY code sizes are unchanged.

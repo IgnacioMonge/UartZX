@@ -6,8 +6,11 @@ when that backend is designed.
 
 ## Shared contract
 
-Every backend offers the same entry points, so the helpers in `send.inc` and
-the applications do not care which one is included.
+Every compatible full backend offers the same entry points, so the helpers
+in `send.inc` and the applications do not care which one is included.
+`<backend>_core.inc` supplies init/read/raw read/write and required safety;
+the other routines are optional leaves. The README lists emitted costs and
+`integration.md` documents selection, state ownership and SpecTalkZX adoption.
 
 | Entry | In | Out |
 |---|---|---|
@@ -23,11 +26,14 @@ the applications do not care which one is included.
 
 `uart_read` preserves DE and HL. A failed `uart_write` latches
 `uart_tx_failed` and later writes are refused until `uart_init`. An
-application that keeps its own fault latch may copy the failure there and
-write 0 to `uart_tx_failed`; it then owns the rule that a command is never
-sent with holes. On the Next and the AY it may likewise read through `uart_read_raw`,
-move `uart_rx_errors` into its latch and write 0 to it; it then owns the
-rule that a stream with a hole is never delivered as whole. No routine
+application may alias that byte to its own nonzero failure state or transfer
+the failure before clearing it, taking over fail-stop and all disconnect
+effects. Driver values are not application enum values: Classic may store
+0x41; see the tested 0/1/2 adapter in `integration.md`. On Next and AY an
+application with its own recovery may use `uart_read_raw` and transfer
+`uart_rx_errors` before clearing it. It then owns loss notification, bounded
+purge and resynchronization; it need not include `uart_flush`. Errors noticed
+during TX must also reach that owner. No routine
 uses IX, IY or the alternate registers unless its header says so. divMMC and
 Next implement this contract in full. A bit-banged port cannot: the AY
 section lists its exceptions.
@@ -159,7 +165,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | One-byte RX cache, peek with value | BridgeZXadv | Dropped | The FIFO keeps the byte; `uart_ready` is status only |
 | TX refuses while RX errors are latched | BridgeZXadv, NetChessZX (C layer) | Dropped | RX health does not decide whether a byte can be queued; the application can test `uart_rx_errors` |
 | Bounded TX wait with a failure latch | SpecTalkZX, BitStream | Taken, 4096 samples | Over ten byte times at 9600 baud and 28 MHz (the NetManZX sizing). 256 samples (BridgeZXadv, NetChessZX) are under one byte there |
-| RX moved into a ring during a TX wait | SpecTalkZX, BitStream | Dropped | The wait is one byte time and the RX FIFO holds 512. A whole `uart_write_block` reads no input. With both FIFOs empty and the ESP sending at the same rate, input is lost past 575 bytes while the line paces the send, as at 115200 baud. When the line outruns the send loop (218 T-states a byte, without the Next's wait states) the limit is about 512 × line T-states per byte / 218: 357 bytes at 230400 baud and 3.5 MHz, 329 at 2000000 baud and 28 MHz. `uart_write_block_fast`, at 101 T-states a byte, keeps up with 2000000 baud at 28 MHz: 573 bytes there. Tested at 115200 baud and 3.5 MHz and at 2000000 baud and 28 MHz. The application splits longer sends and drains between the parts |
+| RX moved into a ring during a TX wait | SpecTalkZX, BitStream | Application-owned | Driver remains ring-independent. A healthy TX wait is at most one byte time, but the full failure timeout is longer. Whole block sends read no input: with both FIFOs empty the model loses input past 575 TX bytes at 115200/3.5 MHz, or 329 at 2000000/28 MHz (218 T/byte loop); fast block send moves the latter to 573 (101 T/byte, no physical wait states). With 128 RX bytes pending even a 512-byte send overflows. `integration.md` specifies occupancy/time budgets, tested RX service before sends, and application polling with RX service for stalled TX |
 | Baud tables: 115200, 230400, 2000000 | BridgeZXadv | Taken | 115200 in the driver; every other rate is a 16-byte file an application includes only if it uses it |
 | Baud tables: 9600, 57600, 1152000 | NetManZX | Taken | Same |
 | 2000000 baud table | BridgeZXadv and NetManZX disagree | The BridgeZXadv values | Nearest divisors; a test checks every table against the documented clocks |
@@ -189,10 +195,12 @@ a Next adds at 28 MHz.
 |---|---|---|---|---|
 | Read, nothing pending | 88 (66 raw) | 117 | 80 | 99 |
 | Read, byte returned | 108 (86 raw) | not counted | not counted | not counted |
-| Size | 331 bytes | 360 bytes | 239 bytes | 267 bytes |
+| Size | 341 bytes | 360 bytes | 239 bytes | 267 bytes |
 
-- The 331 bytes include the 115200 table and two state bytes; each further
-  rate adds 16. The 360 of BridgeZXadv include three tables.
+- The 341 bytes include the 115200 table, interrupt-state-preserving reset
+  controls and two state bytes; the duplex core alone is 194 bytes including
+  state. Full code grew by 10 bytes from the pre-modularity 331-byte total.
+  Each further rate adds 16. The 360 of BridgeZXadv include three tables.
 - Nearest divisors still miss the rate. The worst case of each table:
 
   | Rate | Worst error | Video timing |

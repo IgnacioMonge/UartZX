@@ -6,11 +6,17 @@ backends, the same entry points on all of them.
 
 ## What it does
 
-| Backend | Hardware | Files | Size |
-|---|---|---|---|
-| divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. 115200 baud, fixed by the hardware | `src/divmmc.inc`, `src/divmmc_vars.inc` | 157 bytes |
-| Next | ZX Spectrum Next internal UART (`#133B`..`#163B`). 115200 baud by default | `src/next.inc`, `src/next_vars.inc`, optional `src/next_baud_*.inc` and `src/next_write_block.inc` | 331 bytes |
-| AY | Bit-banged serial on I/O port A of the AY-3-8912. 9600 baud | `src/ay.inc`, `src/ay_vars.inc`, optional `src/ay_speed.inc` | 476 bytes |
+| Backend | Hardware | Minimal code | Compatible full code | State |
+|---|---|---:|---:|---:|
+| divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 75 B | 156 B | 1 B |
+| Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 192 B | 339 B | 2 B |
+| AY | Serial on AY-3-8912 port A, 9600 baud | 403 B | 473 B | 3 B |
+
+Minimal means `src/<backend>_core.inc`; full means the existing
+`src/<backend>.inc`. Both need `src/<backend>_vars.inc` in RAM, or equivalent
+application-owned storage. These are measured emitted code and state sizes,
+verified with both assemblers and a z88dk link with code and BSS apart.
+Send helpers and other optional files are additional; see the costs below.
 
 Every backend offers the same routines:
 
@@ -25,11 +31,15 @@ Every backend offers the same routines:
 | `uart_write_string` (`src/send.inc`) | HL = NUL-terminated text | CF=1 and HL at the unsent byte on failure |
 | `uart_write_block` (`src/send.inc`) | HL = data, BC = length | CF=1, HL and BC at the unsent byte on failure |
 
-The driver moves bytes. It does not speak AT commands, keep a ring buffer or
-time anything out for you: that stays in the application.
+The core supplies `uart_init`, `uart_read`, `uart_read_raw` and `uart_write`.
+The other routines are selected through optional includes. TX timeouts,
+fail-stop and receive error capture are always part of the core.
+
+The driver moves bytes. AT commands, ring buffers, receive deadlines and
+recovery policy stay in the application.
 
 The exact contract of each backend (registers destroyed, interrupts, error
-handling, T-state costs) is in the header of its `.inc` file. Read it before
+handling, T-state costs) is in the header of its `_core.inc` file. Read it before
 using a backend: they are not identical. In particular:
 
 - **divMMC / ZX-Uno:** the receiver holds one byte, so the ESP must use CTS
@@ -40,10 +50,16 @@ using a backend: they are not identical. In particular:
   `uart_flush`, so a stream with a hole is never handed over as whole.
   `uart_set_baud` and the optional tables change the rate; `uart_esp_reset`
   pulses the reset line of the ESP, which also resets the expansion bus.
+  Optional `next_reset.inc` offers assert/release without HALT or boot waits,
+  preserving the interrupt enable state for application-owned waits.
   `uart_write_block` reads no input while it sends: at the same rate both
-  ways, a send longer than 575 bytes can overflow the RX FIFO at 115200
-  baud, and a shorter one at faster rates (329 bytes at 2000000 baud and
-  28 MHz), so split long sends and drain input between the parts.
+  ways with both FIFOs initially empty, a send longer than 575 bytes can
+  overflow the RX FIFO at 115200 baud, and a shorter one at faster rates
+  (329 bytes at 2000000 baud and
+  28 MHz). With 128 bytes already pending, even a 512-byte send overflows.
+  Service RX before sending and between bounded parts; the
+  [adoption guide](docs/integration.md#simultaneous-next-rx-and-tx) gives the
+  occupancy/time budget and a tested schedule.
   `uart_write_block_fast` (`src/next_write_block.inc`, optional) does the
   same job with the same checks in 101 T-states a byte instead of 218,
   counted without the Next's wait states.
@@ -88,9 +104,12 @@ the rest, so the programs can share one driver instead of five.
 ## How to use it
 
 Copy `src/` into your project, or add this repository as a submodule.
-Include one backend per build, plus `send.inc` if you want the string and
-block helpers. Code and state are separate files so you decide where the
-variables live.
+Include one backend per build, plus `send.inc` if you want both send helpers.
+Code and state are separate files so you decide where the variables live.
+The existing full includes retain their entry points and ABI. For z88dk,
+add `-I UartZX/src` (or the absolute path to `src`) to the assembler command:
+nested includes are resolved through its include search path. sjasmplus
+resolves them relative to the including file. Keep the `src` directory intact.
 
 sjasmplus (wrap it in a module; labels become `Uart.uart_read` and so on):
 
@@ -138,6 +157,78 @@ z88dk-z80asm (the state files are zero-initialised, so they can go in bss):
 C programs call the assembly entry points through their own thin wrappers;
 none are provided, because names and calling conventions differ per project.
 
+### Minimal selections
+
+For divMMC / ZX-Uno:
+
+```asm
+    include "UartZX/src/divmmc_core.inc"
+    include "UartZX/src/divmmc_vars.inc"
+```
+
+For Next, including the mandatory 115200 initialization table and setter:
+
+```asm
+    include "UartZX/src/next_core.inc"
+    include "UartZX/src/next_vars.inc"
+```
+
+For AY:
+
+```asm
+    include "UartZX/src/ay_core.inc"
+    include "UartZX/src/ay_vars.inc"
+```
+
+Do not combine a full backend include with its core or leaves. Optional leaves
+normally follow the core. The exception is `ay_init_keep_mixer.inc`: put it
+immediately **before** `ay_core.inc`, so its relative jump reaches the shared
+initializer without an extra byte or call. The full AY include does this already.
+
+### Optional costs
+
+Each row adds only the listed code bytes, **zero state** and no selection
+overhead in the core. Constants emit no bytes. An omitted routine has no label
+or machine code. The linker does not prune functions inside a selected object.
+
+| Include / entry | divMMC | Next | AY |
+|---|---:|---:|---:|
+| `<backend>_ready.inc` / `uart_ready` | 12 B | 20 B | 11 B |
+| `<backend>_flush.inc` / `uart_flush` | 12 B | 43 B | 33 B |
+| `<backend>_read_block.inc` / `uart_read_block` | 57 B | 49 B | 12 B |
+| `send_string.inc` / `uart_write_string` | 10 B | 10 B | 10 B |
+| `send_block.inc` / `uart_write_block` | 12 B | 12 B | 12 B |
+| `send.inc` / both send helpers | 22 B | 22 B | 22 B |
+| `next_reset.inc` / `uart_esp_reset_assert`, `uart_esp_reset_release` | — | 24 B | — |
+| `next_esp_reset.inc` / legacy frame-wait reset, including `next_reset.inc` | — | 35 B | — |
+| Each `next_baud_*.inc` optional table | — | 16 B | — |
+| `next_write_block.inc` / `uart_write_block_fast` | — | 46 B | — |
+| `ay_init_keep_mixer.inc` / `uart_init_keep_mixer` | — | — | 14 B |
+| `ay_speed.inc` / persistent ESP rate change | — | — | 360 B |
+
+`uart_set_baud` and `uart_baud_115200` stay in the Next core: `uart_init`
+uses both. Omitting the other baud tables removes all their bytes. The AY
+second-byte cache and error byte, Next RX error byte, and hardware-backend
+TX failure byte are required by the duplex core, not by optional helpers.
+
+| Configuration | divMMC code + state | Next code + state | AY code + state |
+|---|---:|---:|---:|
+| Minimal duplex core | 75 + 1 B | 192 + 2 B | 403 + 3 B |
+| Compatible full include | 156 + 1 B | 339 + 2 B | 473 + 3 B |
+| Full + both send helpers + all applicable optional tables/speed/fast send | 178 + 1 B | 487 + 2 B | 855 + 3 B |
+
+The full Next include is 10 code bytes larger than before this split: its
+reset now shares assert/release controls that preserve IFF. The minimal core
+omits those 35 bytes entirely. The divMMC and AY full code sizes are unchanged.
+There are no added cycles on the read/write paths: for example Next read
+remains 88/108 T-states empty/byte, raw read 66/86, and immediate write 152;
+AY write remains 4233 T-states. These are model costs without physical contention
+or Next wait states.
+
+[Integration and SpecTalkZX adoption](docs/integration.md) covers the L-to-A
+adapter, shared TX state, application-owned RX recovery, concurrent Next
+traffic, reset waits and the limits of these measurements.
+
 ## Rules of the source
 
 - Every driver is Z80 assembly. No driver logic is written in C.
@@ -155,7 +246,7 @@ python -m unittest discover tests
 
 Needs `sjasmplus` and `z88dk-z80asm` on the PATH and the Python `z80`
 package (`pip install z80==1.2.0`). Last checked with sjasmplus 1.23.1 and
-z88dk-z80asm build 24860-762578732-20260915.
+z88dk-z80asm build 24860-762578732c-20260630.
 
 - `test_assembly.py`: both assemblers produce the same bytes for each
   backend.
@@ -163,8 +254,14 @@ z88dk-z80asm build 24860-762578732-20260915.
   against a UART model built from the HDL of its hardware. They check the
   register contract, T-state costs, the failure latches, error handling, and
   that no byte is written to a busy or full transmitter.
-- `test_readme.py`: both examples under "How to use it" assemble and run,
-  the z88dk one with its code and state linked to separate addresses.
+- `test_readme.py`: the full examples assemble and run, the z88dk one with
+  code and state linked to separate addresses; all three minimal selections
+  assemble with both tools.
+- `test_modularity.py`: minimal/full configurations and independent optional
+  leaves assemble with both tools and link from separate application/driver
+  objects; emitted code, BSS size, omitted labels and mandatory safety are checked.
+- `test_next.py` also reproduces RX overflow with input already pending and
+  exercises a bounded consumer schedule under simultaneous RX/TX.
 - `test_ay.py`: the AY driver against a model of the AY port and an ESP at
   9600 baud. Every bit sent is decoded and every bit received is sampled in
   emulated T-states, at the 48K and 128K clocks and with the ESP 2.5 % off.
@@ -174,6 +271,7 @@ z88dk-z80asm build 24860-762578732-20260915.
 - `src/`: the drivers.
 - `docs/design.md`: the shared contract and, per backend, the hardware model
   and the ledger of what was taken from each application driver.
+- `docs/integration.md`: modular costs, ownership and SpecTalkZX adoption.
 - `docs/baseline-review.md`: the comparison of the application drivers.
 - `docs/sources.md`: which versions of which programs were compared.
 - `tests/`: assembly and emulation checks.
@@ -184,7 +282,7 @@ z88dk-z80asm build 24860-762578732-20260915.
 copyright notice.
 
 One exception to check before relying on that: the timed bit loops in
-`src/ay.inc` come, almost unchanged, from
+`src/ay_core.inc` come, almost unchanged, from
 [netman-zx](https://github.com/nihirash/netman-zx) by Alex Nihirash, through
 NetManZX. netman-zx publishes no licence: on 2026-11-16 it had no licence
 file, and its latest commit, `9cd6173`, is the one compared here. No licence
