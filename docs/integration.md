@@ -4,96 +4,193 @@ UartZX owns register access, bounded TX, fail-stop and RX error capture.
 The application owns scheduling, buffers, framing, recovery and disconnect
 effects. Selecting smaller includes does not change that boundary.
 
-## Measured scope
+## Measured scope — 2026-11-17
 
-Work started at UartZX `bdb1621`, with a clean checkout and 54 passing tests.
-SpecTalkZX was read, not modified: `C:/dev/SpecTalkZX dev`, clean `main`,
-`2140e6b`. Its current `asm/divmmc_uart.asm` and `asm/next_uart.asm` were
-assembled and linked in temporary files with their external symbols supplied
-as absolute addresses. This confirms **101 B Classic and 267 B Next code**;
-it does not measure their external ring, failure handler or application state.
-No SpecTalkZX application binary was rebuilt or linked with UartZX.
+These UartZX measurements started from `014d21d` and used the following
+consumer snapshots read-only:
 
-UartZX has no published tags or GitHub releases at this check, so its changelog
-continues to describe the first release under Unreleased.
+- Original Classic: `C:/dev/SpecTalkZX dev`, reference `2140e6b`.
+- Previous integration snapshot: `C:/Users/ignac/.codex/worktrees/uartzx-evaluation/SpecTalkZX dev`,
+  branch `codex/uartzx-classic`, including its uncommitted work.
+- Real callers: `src/clock_classic.c`, `asm/spectalk_asm/40_text_numeric_screen.asm`,
+  `src/net_classic.c`, `src/spectalk.c`, and the integration's compiler listings
+  in `build/evidence/main_build.c.lis` and `spectalk_asm.asm.lis`.
 
-| UartZX selection | Code | Required state | Omitted from compatible full include |
-|---|---:|---:|---:|
-| divMMC core | 75 B | 1 B TX failure | 81 B |
-| Next core | 192 B | 1 B TX failure + 1 B RX errors | 147 B |
-| AY core | 403 B | 2 B receive cache + 1 B RX errors | 70 B |
+The inline SNTP sequence stores the second decimal digit in E across the
+first send. The string and compiled C callers also keep pointers in HL.
+The fast contract therefore preserves **E and HL**; a C ABI alone would miss
+these requirements. BC and D are scratch in the original Classic writer.
 
-The README lists each optional cost and the complete configurations. All
-optional includes add zero state. For each checked configuration,
-`tests/test_modularity.py` compares both assemblers' bytes and links separate
-application and driver objects with code at `0x8100` and BSS at `0xC000`.
-Only init/read/write are referenced by the application object. The resulting
-code section contains the entire selected driver plus the 10-byte caller;
-unreferenced selected helpers remain present. The table excludes that caller.
-This is actual assembly/link evidence, not a dead-code-elimination estimate.
-Tools used: sjasmplus 1.23.1, z88dk-z80asm 24860-762578732c-20260630,
-Python 3.11 and the `z80` emulator.
+Both original and integrated UART modules were freshly assembled in temporary
+files, with their original instructions unchanged and only object directives
+adapted to the common syntax. Both assemblers emitted identical bytes. The
+measurements below execute those bytes against the UART model: status is read,
+the requested byte (`0x5A`) is transmitted, and pending RX is not consumed.
+These before values are reproduced measurements, not timings copied from notes.
 
-The old isolated Classic trial of 188 B (+87 B) is historical context, not a
-fresh measurement or a lower bound. The adoption specimen below now assembles
-to 116 B Classic / 233 B Next code (core + 14-byte send adapter + 27-byte
-initialization wrapper). It shares the existing application TX byte; Next
-still needs an RX error byte. Both assemblers agree. External `_frame_wait`
-and `_uart_tx_fail` are supplied by the application; test substitutes are
-outside those counts. Classic's specimen is +15 B against the current
-101-byte module. The Next specimen **does not replace** the 267-byte module:
-RX service, gap marking and recovery still have to be wired and costed.
-These are not final SpecTalkZX link deltas or evidence that its memory guard
-passes. In particular, do not budget Classic against a historical free-RAM
-figure; its current build guard and overlays must be checked at adoption.
+| Selection | UART code | Persistent UART state | Internal TX stack | TX ready |
+|---|---:|---:|---:|---:|
+| Original complete Classic module, `2140e6b` | 101 B | 1 B shared | 0 B | 150 T |
+| Prior complete Classic integration, `014d21d` core | 116 B | 1 B shared | 6 B | 256 T |
+| New complete Classic, fast L entry | **90 B** | **same 1 B shared** | **0 B** | **150 T** |
+| New Classic + optional compatible A adapter | 102 B | same 1 B shared | L: 0 B; A: 6 B | L: 150 T; A: 235 T |
+| Previous generic compatible divMMC core | 75 B | 1 B | 4 B | 198 T |
+| New generic compatible divMMC core | 82 B | 1 B | 6 B | 235 T |
+| New generic compatible full divMMC include | 163 B | 1 B | 6 B | 235 T |
+| New fast divMMC core + default failure destination | 70 B | 1 B | 0 B | 150 T |
+| New fast divMMC core + external failure destination | 63 B | 1 B shared | 0 B | 150 T |
+
+Classic's **90 B = 63 B init/read/fast-send core + 27 B initialization wrapper**.
+The L entry is an EQU alias and emits zero adapter bytes. Count all of these
+bytes even if some labels are unreferenced. The only excluded dependencies
+are those already external to the original module: **`_frame_wait`,
+`_uart_tx_fail`, and the shared byte `_uart_tx_failed`**. State is shown
+separately in the table; it is reused, never allocated a second time.
+Test callers, test instrumentation and external handler implementations are
+not UART module code. The optional A adapter is deliberately absent from the
+minimal Classic selection; linking it costs 12 B and is shown separately.
+
+Cycles run from the entry of `_ay_uart_send` to its return, excluding the
+caller's CALL, with TX ready on the first status sample. The A rows measure
+`uart_write` by the same rule. Stack excludes the caller's two-byte return
+address; it records the deepest internal use, also observed at port I/O.
+The fast path makes no stack writes. The former 192-sample Classic timeout
+becomes 256 samples; it remains bounded. All rows use plain Z80 timing without
+contention, interrupts occurring inside TX, physical UART latency or Next waits.
+
+`tests/test_classic.py` compares sjasmplus and z88dk-z80asm bytes, then links
+separate caller, UART and external-effects objects with code at `0x8100`,
+effects at `0x9000` and BSS at `0xC000`. The minimal UART section is exactly
+90 B plus the 10 B test caller; the compatible selection is 102 B plus that
+caller. Generic compatible selections and every other backend also have
+separate-object link checks in `tests/test_modularity.py`. No selected code
+is assumed to disappear through dead-code elimination.
+
+Reference SHA-256 (files read without modification):
+
+- Original module: `07aa20307cf4c319c116ddcd38dbf808ab35852076626be6237be53d005510e0`.
+- Integration adapter: `1fc8230ce892749462506de7f24bf373aa2ca316278d31f10a895048f905a1cc`.
+- Integration vendored core: `9eb8b1a1b48dbbae8e19c96230c31a91e905471cc011f46b50478e5a708651b5`.
+
+Tools: sjasmplus 1.23.1, z88dk-z80asm 24860-762578732c-20260630,
+Python 3.11 and the `z80` emulator. GitHub tags and releases were checked:
+none published, so the changelog tracks the first release under Unreleased.
+
+Verification from the UartZX root:
+
+```powershell
+& 'C:/Program Files/Python311/python.exe' -m unittest discover -s tests -v
+```
+
+Result: **69 tests pass**, covering all three backends, compatible examples,
+selected sizes/links and the Classic regressions. `git diff --check` passes.
+During those library measurements, both consumer Git statuses and the
+three reference hashes above remained unchanged.
+
+**HW PENDING.** The tests model UART ports and frame waits. They do not
+validate real CTS/ESP timing, contention, interrupt/NMI stack high-water or
+the guarded initial read on physical hardware. The initial library
+measurements did not rebuild, migrate, deliver or push a full consumer; final
+resident/overlay guards must be checked when a consumer adopts the change. The earlier Next
+specimen remains 233 B versus its original 267 B module, but is not a complete
+replacement: RX service, gap marking and recovery still need integration.
 
 ## Includes, ABI and placement
 
-Use one `<backend>_core.inc` and only the required leaves. The existing
-`<backend>.inc` and `send.inc` are composition files with the old public
-entry points. There is one algorithm per routine, no runtime options and no
-preprocessor feature matrix. z88dk must receive `-I <UartZX>/src` for nested
-includes; this is the one required build-command adjustment for full includes.
-Core-only builds without nested includes do not need that adjustment.
+The compatible `<backend>_core.inc`, `<backend>.inc` and `send.inc` retain their
+public entries and register contracts. divMMC has one transmission algorithm,
+in `divmmc_fast.inc`; the compatible core composes it with the default failure
+destination and the optional preserving A adapter. There are no runtime
+options, indirect calls or preprocessor feature combinations.
 
-Next initialization still selects the ESP, resets both FIFOs, selects 8N1 and
-programs 115200 for the current video timing. Its setter and 16-byte 115200
-table are therefore core dependencies. Other baud tables are independent.
-Changing baud remains an explicit operation on both peers followed by
-application resynchronization; it does not require linking `uart_flush`.
+| divMMC file | Supplies | Code |
+|---|---|---:|
+| `divmmc_fast.inc` | `uart_init`, `uart_read`, `uart_read_raw`, `uart_write_fast` (L) | 63 B |
+| `divmmc_tx_fail.inc` | Default `uart_tx_fail`: latch 1, CF=1 | 7 B |
+| `divmmc_write.inc` | `uart_write` (A), preserves A/BC/DE/HL | 12 B |
+| `divmmc_core.inc` | All three above, same existing API | 82 B |
+| `divmmc.inc` | Compatible core + ready/flush/read-block | 163 B |
 
-Keep one symbol scope per driver (`MODULE` with sjasmplus, consumer
-PUBLIC/EXTERN and SECTION declarations with z88dk). Keep core and leaves
-resident and mapped while called; an overlay must not replace them or their
-state. State must be writable RAM, initialized on cold start or through
-`uart_init`. AY's cache bytes must remain adjacent. Only its optional
-`ay_init_keep_mixer.inc` has an include-order constraint: immediately before
-`ay_core.inc` for the shared initializer's short jump.
+Choose `divmmc_fast.inc` plus **one** failure destination: either define
+`uart_tx_fail EQU application_handler`, or include `divmmc_tx_fail.inc`.
+Include `divmmc_write.inc` only if an A-input caller or the generic string/block
+helpers needs it. The L input is native, so an L caller needs no adapter.
+The fast selection alone intentionally has no `uart_write` label. Both
+`divmmc_core.inc` and `divmmc.inc` include that label and its compatible
+contract automatically. The +7 B/+37 T/+2 B stack tradeoff on compatible
+A-input writes buys a single shared algorithm with a zero-overhead Classic
+L entry. Read costs remain 60/103 T-states empty/byte.
 
-No core uses IX or IY. divMMC and Next preserve the interrupt enable state;
-AY timed I/O disables interrupts and returns enabled as before. AY code and
-stack still require uncontended memory, including a suitable bank on 128K
-machines. Do not infer ISR safety or reentrancy: an interrupt handler must
-not concurrently operate the same UART/AY registers or change required banks.
+For z88dk, pass `-I <UartZX>/src` for nested includes, including the compatible
+divMMC core. Use consumer-owned SECTION/PUBLIC/EXTERN declarations; shared
+source leaves contain none. Keep one symbol scope per driver and keep code
+and state resident and mapped while called. State must be writable RAM and
+initialized on cold start or through `uart_init`; AY cache bytes stay adjacent.
+Put `ay_init_keep_mixer.inc` immediately before `ay_core.inc` for its short jump.
 
-## SpecTalkZX TX adapter and state ownership
+No core uses IX or IY. divMMC and Next preserve IFF; AY timed I/O returns with
+interrupts enabled and still needs uncontended code/stack. Drivers are not
+reentrant: an interrupt handler must not operate the same UART/AY registers
+or change required banks. Next init still selects the ESP, resets FIFOs,
+selects 8N1 and programs 115200; its setter and table remain core dependencies.
 
-SpecTalkZX passes a byte in L; `uart_write` takes A and preserves A/BC/DE/HL.
-A bare `ld a,l` adapter is insufficient on failure. SpecTalkZX's
-`_uart_tx_failed` means 0=healthy, 1=pending report, 2=already reported.
-Its `_uart_tx_fail` immediately clears connection/SNTP state and writes 1;
-the main loop later disconnects, reports the error and changes 1 to 2.
-Classic UartZX can latch **0x41**, and Next latches 1. Never expose 0x41 to
-code that checks `== 1`, or clear/overwrite state 2 on subsequent sends.
+## Classic fast contract and failure ownership
 
-The least-state option is to alias the driver TX latch to the existing byte
-and **omit its allocation in `<backend>_vars.inc`**. With z88dk, import
-`_uart_tx_failed` and define `DEFC uart_tx_failed = _uart_tx_failed` in the
-driver module. For Next, allocate `uart_rx_errors` separately, or alias it
-only after checking the RX ownership rules below. For a single sjasmplus
-scope, the equivalent is `uart_tx_failed EQU _uart_tx_failed`.
+`uart_write_fast` takes L. It destroys AF/BC/D, preserves E/HL/IX/IY, alternate
+registers and IFF, and uses only the existing return address. Only CF is a
+result: 0=sent, 1=not sent. Other flags are unspecified. The byte is written
+from L after a fresh not-busy sample; TX never reads RX.
 
-The tested send adapter is:
+The first operation reads the shared failure byte once. Any nonzero value,
+including 1=pending report and 2=already reported, returns CF=1 before port
+access. After 256 busy samples, the core tail-jumps directly to `uart_tx_fail`.
+This assembly-time destination must:
+
+- latch a nonzero state (1 for Classic), and perform immediate failure effects;
+- return CF=1 with SP balanced;
+- preserve E/HL/IX/IY, alternate registers and IFF; AF/BC/D may change.
+
+There is no driver latch write before the custom destination. The real
+SpecTalkZX `_uart_tx_fail` sets 1 and clears `_connection_state`,
+`_sntp_init_sent` and `_sntp_waiting`, then sets `_status_bar_dirty` and CF.
+Later sends in state 1 or 2 never reach it again. The default destination
+also stores 1 (the previous driver used nonzero `0x41`); the public contract
+remains nonzero=failure. Existing nonzero values remain unchanged on rejection.
+
+The complete selectable example is [examples/classic_uart.inc](../examples/classic_uart.inc).
+Its essential wiring is:
+
+```asm
+uart_tx_failed EQU _uart_tx_failed
+uart_tx_fail EQU _uart_tx_fail
+_ay_uart_send EQU uart_write_fast
+uartRead EQU uart_read
+    include "UartZX/src/divmmc_fast.inc"
+```
+
+Do not include `divmmc_vars.inc` when aliasing the application's byte. With
+z88dk, import the three external dependencies and export `_ay_uart_init`,
+`_ay_uart_send` and `uartRead`; EQU aliases to external symbols are covered
+by the link test. sjasmplus can use the same example in a single scope.
+
+The example retains **ten frame waits and 512 bounded startup reads**, plus
+the core's guarded initial stale-byte read. The total is 523 status queries;
+an absent UART causes exactly 523 bounded data reads. `_frame_wait` retains
+ownership of IY, interrupts and overlay handling. Deliberate init clears the
+shared latch; it must accompany the application's existing recovery sequence,
+never an automatic retry of a partly sent command.
+
+`tests/test_classic.py` executes the linked example, the consumer's failure
+body, its string loop and its inline SNTP digit sequence. It tests byte values
+0/0x5A/0x80/0xFF, incoming carry both ways, IFF, alternate registers, stack,
+E/HL, busy/timeout/absent ports, one shared-state read per send, failure effects
+once, states 1/2, and failures at the first/middle/last byte of strings/blocks.
+The compatible A wrapper has the same checks and preserves A/BC/DE/HL.
+
+## Next compatible adapter
+
+Next's TX and RX-error contracts are unchanged. SpecTalkZX still needs its
+application gate and first-failure transfer around the compatible A API:
 
 ```asm
 _ay_uart_send:
@@ -107,26 +204,14 @@ _ay_uart_send:
     jp _uart_tx_fail
 ```
 
-The application gate preserves 1 and 2 and prevents repeated failure effects.
-The first failed write reaches `_uart_tx_fail` even when UartZX has already
-written the shared byte. That normalizes Classic's 0x41 and runs all immediate
-effects once. Later writes remain stopped. At deliberate recovery,
-`uart_init` clears the shared latch; reset/boot readiness and application
-connection state must also be reset in the consumer's existing order.
-Do not route around this adapter from string/block send paths: either keep
-their existing loop through the adapter, or wrap a UartZX bulk send's CF
-and RX error results into the same application effects before returning.
-
-If aliasing is unsuitable, retain the driver byte and transfer failures into
-the application's state/effects on every send path. Retaining the driver
-latch until deliberate reinit is simplest. Clear it earlier only after the
-application gate has taken over fail-stop; never continue a partially sent
-command. This costs one additional byte of state and extra transfer code.
-
-`tests/spectalk_adapter.inc` includes the send adapter and a specimen init
-wrapper with the existing ten `_frame_wait` calls and 512 bounded startup
-reads. The tests check 0x41-to-1 normalization, effects once, and refusal in
-states 1 and 2. They do not implement the real C disconnect path or frame wait.
+Alias `uart_tx_failed` to `_uart_tx_failed`, omit its allocation from
+`next_vars.inc`, and allocate `uart_rx_errors` separately unless its ownership
+has been proved compatible. `tests/spectalk_adapter.inc` retains this adapter
+and the ten-frame/512-read initialization specimen; the tests still cover its
+1/2 refusal and one-shot effects. All send paths must pass through the
+application boundary. If separate latches are used, transfer failures/effects
+on every path and retain fail-stop until deliberate recovery. Do not retry a
+partly sent command. Next RX obligations follow below.
 
 ## RX recovery owned by the application
 

@@ -1,4 +1,5 @@
-; Adoption specimen, not an integration into SpecTalkZX.
+; Compatible adoption specimen (Next or existing A-input divMMC consumers).
+; Minimal Classic uses examples/classic_uart.inc instead, without this gate.
 ; uart_tx_failed aliases the application's _uart_tx_failed; do not allocate twice.
 ; _uart_tx_fail owns normalization to 1 AND the immediate disconnect effects.
 _ay_uart_send:
@@ -9,7 +10,7 @@ _ay_uart_send:
     ld a, l
     call uart_write
     ret nc
-    jp _uart_tx_fail             ; Classic's 0x41 must become application state 1
+    jp _uart_tx_fail             ; normalize state and run immediate effects once
 
 ; Same 10 frame calls + 512 bounded reads as the reference consumer.
 ; Application _frame_wait owns IY, interrupt and overlay requirements.

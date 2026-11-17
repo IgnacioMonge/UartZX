@@ -8,7 +8,7 @@ backends, the same entry points on all of them.
 
 | Backend | Hardware | Minimal code | Compatible full code | State |
 |---|---|---:|---:|---:|
-| divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 75 B | 156 B | 1 B |
+| divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 82 B | 163 B | 1 B |
 | Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 192 B | 339 B | 2 B |
 | AY | Serial on AY-3-8912 port A, 9600 baud | 403 B | 473 B | 3 B |
 
@@ -157,7 +157,7 @@ z88dk-z80asm (the state files are zero-initialised, so they can go in bss):
 C programs call the assembly entry points through their own thin wrappers;
 none are provided, because names and calling conventions differ per project.
 
-### Minimal selections
+### Minimal compatible selections
 
 For divMMC / ZX-Uno:
 
@@ -180,6 +180,17 @@ For AY:
     include "UartZX/src/ay_vars.inc"
 ```
 
+For a divMMC consumer passing the byte in L, select `divmmc_fast.inc`
+instead. `uart_write_fast` preserves E/HL, clobbers AF/BC/D, uses no internal
+stack, and sends in 150 T-states with TX ready. Supply `uart_tx_fail` as an
+assembly-time destination, or include `divmmc_tx_fail.inc` for the default
+state-1 latch. Add `divmmc_write.inc` only when the A-input, register-preserving
+`uart_write` API or the generic send helpers are needed. The existing
+`divmmc_core.inc` and `divmmc.inc` include both leaves automatically.
+The complete [Classic example](examples/classic_uart.inc) uses the application's
+failure handler directly: **90 B code including initialization**, the existing
+shared state byte, **zero internal TX stack and 150 T-states per ready send**.
+
 Do not combine a full backend include with its core or leaves. Optional leaves
 normally follow the core. The exception is `ay_init_keep_mixer.inc`: put it
 immediately **before** `ay_core.inc`, so its relative jump reaches the shared
@@ -193,6 +204,8 @@ or machine code. The linker does not prune functions inside a selected object.
 
 | Include / entry | divMMC | Next | AY |
 |---|---:|---:|---:|
+| `divmmc_write.inc` / compatible A-input `uart_write` | 12 B | — | — |
+| `divmmc_tx_fail.inc` / default first-failure destination | 7 B | — | — |
 | `<backend>_ready.inc` / `uart_ready` | 12 B | 20 B | 11 B |
 | `<backend>_flush.inc` / `uart_flush` | 12 B | 43 B | 33 B |
 | `<backend>_read_block.inc` / `uart_read_block` | 57 B | 49 B | 12 B |
@@ -213,21 +226,25 @@ TX failure byte are required by the duplex core, not by optional helpers.
 
 | Configuration | divMMC code + state | Next code + state | AY code + state |
 |---|---:|---:|---:|
-| Minimal duplex core | 75 + 1 B | 192 + 2 B | 403 + 3 B |
-| Compatible full include | 156 + 1 B | 339 + 2 B | 473 + 3 B |
-| Full + both send helpers + all applicable optional tables/speed/fast send | 178 + 1 B | 487 + 2 B | 855 + 3 B |
+| Minimal compatible duplex core | 82 + 1 B | 192 + 2 B | 403 + 3 B |
+| Compatible full include | 163 + 1 B | 339 + 2 B | 473 + 3 B |
+| Full + both send helpers + all applicable optional tables/speed/fast send | 185 + 1 B | 487 + 2 B | 855 + 3 B |
 
 The full Next include is 10 code bytes larger than before this split: its
 reset now shares assert/release controls that preserve IFF. The minimal core
-omits those 35 bytes entirely. The divMMC and AY full code sizes are unchanged.
-There are no added cycles on the read/write paths: for example Next read
+omits those 35 bytes entirely. AY sizes and costs are unchanged. divMMC's
+shared fast core is 63 B with an application failure destination, or 70 B with
+the default destination; the compatible A adapter adds 12 B. This makes the
+compatible core/full selections 7 B larger and A-input TX 235 T-states instead
+of 198; the Classic L-input path omits that cost. Next read
 remains 88/108 T-states empty/byte, raw read 66/86, and immediate write 152;
 AY write remains 4233 T-states. These are model costs without physical contention
 or Next wait states.
 
-[Integration and SpecTalkZX adoption](docs/integration.md) covers the L-to-A
-adapter, shared TX state, application-owned RX recovery, concurrent Next
-traffic, reset waits and the limits of these measurements.
+[Integration and SpecTalkZX adoption](docs/integration.md) covers fast L-input
+and compatible A-input selection, before/after measurements, shared TX state,
+application-owned RX recovery, concurrent Next traffic, reset waits and the
+limits of these measurements.
 
 ## Rules of the source
 
@@ -260,6 +277,12 @@ z88dk-z80asm build 24860-762578732c-20260630.
 - `test_modularity.py`: minimal/full configurations and independent optional
   leaves assemble with both tools and link from separate application/driver
   objects; emitted code, BSS size, omitted labels and mandatory safety are checked.
+- `test_classic.py`: complete 90-byte Classic specimen and optional compatible
+  A adapter assembled with both tools, with separate-object z88dk links. Real
+  instructions check the 150/235 T-state paths, E/HL and compatible register
+  contracts, carry, IFF, alternate registers, stack, one shared-state read,
+  256-poll timeout, absent UART, effects once, states 1/2, partial strings and
+  blocks, inline SNTP's E lifetime, and ten frame waits plus 512 startup reads.
 - `test_next.py` also reproduces RX overflow with input already pending and
   exercises a bounded consumer schedule under simultaneous RX/TX.
 - `test_ay.py`: the AY driver against a model of the AY port and an ESP at
@@ -272,6 +295,7 @@ z88dk-z80asm build 24860-762578732c-20260630.
 - `docs/design.md`: the shared contract and, per backend, the hardware model
   and the ledger of what was taken from each application driver.
 - `docs/integration.md`: modular costs, ownership and SpecTalkZX adoption.
+- `examples/classic_uart.inc`: minimal Classic module with shared failure handling.
 - `docs/baseline-review.md`: the comparison of the application drivers.
 - `docs/sources.md`: which versions of which programs were compared.
 - `tests/`: assembly and emulation checks.

@@ -36,7 +36,7 @@ class Esp(ZxUnoUart):
 
 class Readme(unittest.TestCase):
     def test_minimal_examples(self):
-        for backend, block, size in zip(("divmmc", "next", "ay"), examples()[2:], (76, 194, 406)):
+        for backend, block, size in zip(("divmmc", "next", "ay"), examples()[2:], (83, 194, 406)):
             with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:
                 tmp = Path(tmp)
                 path = tmp / "minimal.inc"

@@ -11,14 +11,25 @@ from its first release.
 
 - Selectable `<backend>_core.inc` and optional ready, flush and block-read
   includes, plus independent string/block send helpers and AY mixer-preserving
-  initialization. Duplex cores emit 75/192/403 code bytes and 1/2/3 state
+  initialization. Compatible duplex cores emit 82/192/403 code bytes and 1/2/3 state
   bytes for divMMC/Next/AY; omitted helpers emit no code or state. Bounded TX,
   fail-stop, RX error capture and Next's initial 115200 configuration remain
   mandatory. README tables and separate-object link tests record the costs.
 - Optional Next reset assert/release controls without HALT or boot waits,
   preserving interrupt enable state; the compatible frame-wait reset shares
   them. The ESP reset also resets the expansion bus.
-- Integration guide with a tested SpecTalkZX L-to-A adapter, shared TX
+- Fast divMMC L-input entry preserving E/HL for Classic's real inline callers,
+  with an optional A-input preserving adapter and one shared TX algorithm.
+  The complete Classic specimen is 90 B and 150 T-states with TX ready,
+  reuses its shared state byte and adds no TX stack use; it keeps ten frame
+  waits and 512 bounded startup reads. Both assemblers and separate-object
+  links verify the selections; instruction-level UART model tests cover
+  registers, flags, stack, failure paths and one-shot disconnect effects.
+- Assembly-time divMMC first-time TX failure destination, with a default
+  state-1 latch. One shared-state check rejects later sends in states 1/2
+  without I/O or repeated effects; Classic can jump directly to its existing
+  disconnect/SNTP handler without a second gate or indirect call.
+- Integration guide with tested SpecTalkZX fast/compatible adapters, shared TX
   failure state preserving 0/1/2 transitions and disconnect effects,
   application-owned raw RX recovery, and a Next RX/TX scheduling budget.
   Regressions reproduce overflow with 128 RX bytes pending during 512-byte
@@ -106,4 +117,11 @@ from its first release.
   No consumer is migrated automatically.
 - Full Next code grows by 10 bytes to share interrupt-state-preserving reset
   controls (339 code + 2 state bytes); minimal builds omit all reset code.
-  Read/write instruction costs and full divMMC/AY code sizes are unchanged.
+  Next read/write instruction costs and AY code sizes are unchanged.
+- Compatible divMMC core/full includes retain all public entries and register
+  contracts through the optional A adapter. Sharing the L-input algorithm
+  costs 7 additional code bytes, 37 T-states and 2 temporary stack bytes for
+  compatible A-input TX (82/163 B code, 235 T-states, 6 B internal stack).
+  Fast Classic omits this adapter and replaces the previous 116 B/256 T
+  integration with 90 B/150 T. The default nonzero failure value is now 1
+  instead of 0x41; existing nonzero states remain unchanged on later sends.

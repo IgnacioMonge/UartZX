@@ -28,8 +28,10 @@ the other routines are optional leaves. The README lists emitted costs and
 `uart_tx_failed` and later writes are refused until `uart_init`. An
 application may alias that byte to its own nonzero failure state or transfer
 the failure before clearing it, taking over fail-stop and all disconnect
-effects. Driver values are not application enum values: Classic may store
-0x41; see the tested 0/1/2 adapter in `integration.md`. On Next and AY an
+effects. The default divMMC/Next destination stores 1; a nonzero state,
+including application state 2, remains unchanged on later sends. divMMC's
+fast selection can tail-jump directly to the application's first-failure
+handler; see the tested 0/1/2 example in `integration.md`. On Next and AY an
 application with its own recovery may use `uart_read_raw` and transfer
 `uart_rx_errors` before clearing it. It then owns loss notification, bounded
 purge and resynchronization; it need not include `uart_flush`. Errors noticed
@@ -80,9 +82,9 @@ The "no UART" verdict is a failed `uart_write`; drain loops must be bounded.
 | RX moved into a ring while TX waits | BitStream | Dropped | TX waits one byte at most and the receiver holds its byte meanwhile; the driver owns no ring |
 | Ready without consuming, status only | NetChessZX, BitStream | Taken | |
 | Bounded TX wait | all | Taken, 256 samples | Over four byte times even at 28 MHz. Longer budgets (4096 in NetManZX, 16384 in BitStream) only delay the "no UART" verdict |
-| TX failure latch until re-init | SpecTalkZX, BitStream, NetManZX (`io_error`) | Taken | A command is never sent with holes |
+| TX failure latch until re-init | SpecTalkZX, BitStream, NetManZX (`io_error`) | Taken | One gate before I/O; first timeout tail-jumps to the assembly-time destination. Default latches 1; application may own immediate effects. States 1/2 never repeat effects |
 | Caller retries after a TX timeout | NetChessZX (C layer) | Dropped | On this hardware a timeout is not transient |
-| Write preserves A, BC, DE, HL | NetManZX, BridgeZXadv (BC, DE) | Taken | TX is paced by the wire, so the pushes cost nothing |
+| Write preserves A, BC, DE, HL | NetManZX, BridgeZXadv (BC, DE) | Compatible A adapter | Optional 12 B wrapper around one L-input algorithm. Fast entry preserves E/HL for real Classic inline callers and avoids saves |
 | Init without HALT, DI or EI | NetChessZX, BitStream | Taken | The driver does not depend on the interrupt setup |
 | Init reads the status and data registers unconditionally ("prime") | BridgeZXadv, NetChessZX, SpecTalkZX, BitStream | Replaced by a guarded read: init falls into `uart_read` | In the HDL a status read does nothing and a data read only matters while a byte is waiting. 19 bytes less. Every application has only run on hardware with the unconditional reads |
 | Report "no byte" when no UART answers | external audit | Not taken; documented in the header | Three variants were measured: reject status `#FF` (+9 bytes, +12 T-states on every read), gate on `uart_tx_failed` (+15 bytes, +22 T-states, only after a failed write), reject non-zero low status bits when RX-ready is set (+13 bytes, +16 T-states per byte). The last one would make reception depend on six status bits being zero on every CPLD image in the field, to help only a machine with no UART |
@@ -99,8 +101,16 @@ it does not apply to this hardware.
 
 ### Numbers
 
-- 157 bytes with its state byte, 179 with `send.inc` (the copied BridgeZXadv
+- 164 bytes with its state byte, 186 with `send.inc` (the copied BridgeZXadv
   driver was 195).
+- Compatible core: 82 code bytes; fast core with default failure destination:
+  70. The fast core with an application destination is 63 bytes. Classic's
+  complete init/read/send specimen is 90 bytes, below the original 101.
+- TX ready: fast L-input 150 T-states, zero internal stack; compatible A-input
+  235 T-states, six temporary stack bytes (excluding the caller's return address).
+  The compatible API formerly cost 198 T-states and four stack bytes; sharing
+  the L-input algorithm trades +7 code bytes/+37 T-states/+2 stack bytes there
+  for a Classic path with no integration overhead.
 - `uart_read`: 60 T-states empty, 103 with a byte (measured by the test).
 - `uart_read_block`: 361 T-states per byte in the model, which is the 304 of
   the wire plus 57 from a byte arriving to its data read.

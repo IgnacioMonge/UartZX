@@ -12,9 +12,9 @@ from test_next import FRAMING, NextUart
 from ay_model import AyUart
 
 BSS = 0xC000
-CORE = {"divmmc": 75, "next": 192, "ay": 403}
-COMPLETE = {"divmmc": 156, "next": 339, "ay": 473}
-ALL = {"divmmc": 178, "next": 487, "ay": 855}
+CORE = {"divmmc": 82, "next": 192, "ay": 403}
+COMPLETE = {"divmmc": 163, "next": 339, "ay": 473}
+ALL = {"divmmc": 185, "next": 487, "ay": 855}
 STATE = {"divmmc": 1, "next": 2, "ay": 3}
 LEAVES = {
     "divmmc": {"ready": 12, "flush": 12, "read_block": 57},
@@ -106,7 +106,7 @@ class Modularity(unittest.TestCase):
                     )
         for leaf, cost in (("string", 10), ("block", 12)):
             with self.subTest(send=leaf):
-                self.check_configuration("divmmc", ("divmmc_core.inc", "send_" + leaf + ".inc"), 75 + cost)
+                self.check_configuration("divmmc", ("divmmc_core.inc", "send_" + leaf + ".inc"), 82 + cost)
         self.check_configuration("ay", ("ay_init_keep_mixer.inc", "ay_core.inc"), 403 + 14)
         # The fast sender does not pull in the generic block/string sender.
         self.check_configuration("next", ("next_core.inc", "next_write_block.inc"), 192 + 46)
@@ -114,7 +114,7 @@ class Modularity(unittest.TestCase):
     def test_minimal_safety_does_not_depend_on_optional_code(self):
         d = Driver(("divmmc_core.inc", "divmmc_vars.inc"), NoUart())
         self.assertLess(d.call("uart_write", a=0x55), 12000)
-        self.assertEqual((d.carry, d.byte("uart_tx_failed")), (True, 0x41))
+        self.assertEqual((d.carry, d.byte("uart_tx_failed")), (True, 1))
         d.io = 0
         d.call("uart_write", a=0x56)
         self.assertEqual((d.carry, d.io), (True, 0))
