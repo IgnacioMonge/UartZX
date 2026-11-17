@@ -10,6 +10,7 @@
 ; Hardware model (ZX Spectrum Next core, src/serial/uart.vhd and ports.txt):
 ;   - RX has a 512-byte FIFO and TX a 64-byte one. A write to a full TX FIFO
 ;     is dropped: every write here follows a fresh not-full sample.
+;     With flow off, the caller must service RX within the FIFO time budget.
 ;   - Status bits 2 (RX overflow: a byte was lost) and 6 (framing or parity
 ;     error) are sticky and cleared by ANY status read. So every status read
 ;     in this file passes through the error test; code that reads the status

@@ -9,6 +9,7 @@ from pathlib import Path
 from harness import ORG, ROOT, Driver, assemble, sjasmplus, z80asm
 from test_divmmc import ZxUnoUart
 from test_next import FRAMING, NextUart
+from ay_model import AyUart
 
 BSS = 0xC000  # the state, away from the code
 
@@ -35,6 +36,32 @@ class Esp(ZxUnoUart):
 
 
 class Readme(unittest.TestCase):
+    def test_portable_receive_step_for_all_backends(self):
+        for backend, device in (("divmmc", ZxUnoUart), ("next", NextUart), ("ay", AyUart)):
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:
+                tmp = Path(tmp)
+                parts = (ROOT / "src" / f"{backend}_core.inc",
+                         ROOT / "src" / f"{backend}_ready.inc",
+                         ROOT / "examples" / "receive_once.inc",
+                         ROOT / "src" / f"{backend}_vars.inc")
+                includes = [part.as_posix() for part in parts]
+                self.assertEqual(sjasmplus(tmp, "sj", includes), z80asm(tmp, "z80", includes))
+                uart = device()
+                d = Driver(parts, uart)
+                if backend == "ay":
+                    uart.interrupts = lambda: d.m.iff1
+                d.call("uart_init")
+                uart.feed(b"Q")
+                d.call("uart_ready")
+                self.assertEqual(d.carry, backend != "ay")
+                d.m.iff1 = d.m.iff2 = False
+                d.call("receive_step", hl=BSS)
+                self.assertEqual((d.carry, d.m.hl, d.m.memory[BSS], d.m.iff1),
+                                 (True, BSS + 1, ord("Q"), backend == "ay"))
+                d.call("receive_step")
+                self.assertEqual((d.carry, d.m.hl), (False, BSS + 1))
+                self.assertEqual(uart.errors, [])
+
     def test_minimal_examples(self):
         for backend, block, size in zip(("divmmc", "next", "ay"), examples()[2:], (83, 194, 406)):
             with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:

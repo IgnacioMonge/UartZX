@@ -21,5 +21,7 @@ uart_flush_byte:
     or c
     jr nz, uart_flush_next
     ld (uart_second_avail), a   ; gave up: keep no byte from before
+    ld a, UART_RX_RECOVERY
+    ld (uart_rx_errors), a      ; only a completed flush or init reopens RX
     scf
     ret

@@ -63,7 +63,9 @@
 ;   uart_flush       Clear uart_rx_errors, then read and discard, bytes with
 ;                    a bad stop bit included, until a read times out: CF=0.
 ;                    CF=1 when UART_FLUSH_MAX bytes went by and more keep
-;                    coming. Destroys A, BC and the alternate set.
+;                    coming: UART_RX_RECOVERY stays latched until a later
+;                    flush completes or uart_init. Normal reads stay refused.
+;                    Destroys A, BC and the alternate set.
 ;   uart_read_block  HL = buffer, B = room (1..255, 0 = 256). Stores bytes
 ;                    until the buffer is full or a read reports nothing (a
 ;                    timeout, a bad stop bit, errors latched). Out: HL =
@@ -87,6 +89,7 @@ UART_START_POLLS    EQU 240     ; 54 T-states each, CTS low
 UART_LATE_POLLS     EQU 13      ; 42 T-states each, CTS high: 1.5 bit times
 UART_FLUSH_MAX      EQU 2048    ; over two seconds of data at 9600 baud
 UART_RX_FRAMING     EQU 0x40    ; uart_rx_errors: a stop bit read low, as on the Next
+UART_RX_RECOVERY    EQU 0x80    ; uart_rx_errors: flush stopped before a quiet read
 
 uart_init:
     ld bc, UART_AY_REGISTER

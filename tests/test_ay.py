@@ -38,6 +38,7 @@ class Ay(unittest.TestCase):
         self.addCleanup(lambda: self.assertEqual(uart.errors, []))
         d.device = uart
         d.call("uart_init")
+        uart.cts_falls = 0  # measure activity after init drives the idle latch
         d.io = 0
         return uart
 
@@ -69,6 +70,46 @@ class Ay(unittest.TestCase):
         self.assertEqual(d.byte("uart_second_avail"), 0)
         self.assertTrue(d.m.iff1)
         self.assertLess(took, 200)
+
+    def test_model_port_direction_controls_pins_not_the_latch(self):
+        uart = AyUart()
+        now = 0
+        uart.clock = lambda: now
+
+        def write(register, value):
+            uart.out(0xFFFD, register)
+            uart.out(0xBFFD, value)
+
+        write(14, 0x72)  # TX, CTS and RX latch low while the port is input
+        uart.feed(b"Q")
+        self.assertEqual((uart.cts_falls, uart.tx_level(now), uart.inp(0xFFFD)),
+                         (0, 1, 0xFF))
+        self.assertFalse(uart.frames)
+        write(7, 0x40)  # the stored latch now drives the pins
+        uart.out(0xFFFD, 14)
+        self.assertEqual((uart.cts_falls, uart.tx_level(now), uart.inp(0xFFFD)),
+                         (1, 0, 0x72))
+        now = 100
+        write(7, 0)  # input releases TX and CTS immediately
+        self.assertEqual((uart.tx_level(now), uart.cts_high_at), (1, now))
+        write(14, IDLE)
+        write(7, 0x40)
+        self.assertEqual((uart.cts_falls, uart.tx_level(now)), (1, 1))
+
+    def test_music_must_keep_port_a_as_output(self):
+        d = self.d
+        uart = self.esp()
+        d.m.iff1 = d.m.iff2 = False
+        uart.out(0xFFFD, 7)
+        uart.out(0xBFFD, 0x38)  # music accidentally releases port A
+        d.call("uart_write", a=0x55)
+        self.assertEqual(uart.sent(), b"")
+        uart.feed(b"Q")
+        self.assertIsNone(self.read())
+        self.assertEqual(uart.cts_falls, 0)
+        d.call("uart_init_keep_mixer")
+        self.assertEqual(uart.regs[7], 0x78)
+        self.assertEqual(self.read(), ord("Q"))
 
     def test_write(self):
         d = self.d
@@ -263,6 +304,31 @@ class Ay(unittest.TestCase):
         self.assertEqual(uart.regs[14], IDLE)
         self.assertTrue(d.carry, "it gave up")
         self.assertEqual(d.byte("uart_second_avail"), 0, "nothing kept from before")
+        self.assertEqual(d.byte("uart_rx_errors"), 0x80, "recovery is pending")
+        uart.stuck_low = False
+        uart.feed(b"stale")
+        d.io = 0
+        self.assertIsNone(self.read())
+        d.call("uart_ready")
+        self.assertEqual((d.carry, d.io), (False, 0))
+        d.call("uart_flush")
+        self.assertEqual((d.carry, d.byte("uart_rx_errors")), (False, 0))
+        uart.feed(b"K")
+        self.assertEqual(self.read(), ord("K"))
+
+    def test_flush_limit_without_framing_also_requires_recovery(self):
+        d = self.d
+        uart = self.esp()
+        uart.feed(bytes(d.symbols["UART_FLUSH_MAX"] + 2))
+        d.LIMIT = 40_000_000
+        try:
+            d.call("uart_flush")
+        finally:
+            del d.LIMIT
+        self.assertEqual((d.carry, d.byte("uart_rx_errors"),
+                          d.byte("uart_second_avail")), (True, 0x80, 0))
+        d.call("uart_init")
+        self.assertEqual(d.byte("uart_rx_errors"), 0)
 
     def test_read_block(self):
         d = self.d

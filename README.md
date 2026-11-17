@@ -10,7 +10,7 @@ backends, the same entry points on all of them.
 |---|---|---:|---:|---:|
 | divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 82 B | 163 B | 1 B |
 | Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 192 B | 339 B | 2 B |
-| AY | Serial on AY-3-8912 port A, 9600 baud | 403 B | 473 B | 3 B |
+| AY | Serial on AY-3-8912 port A, 9600 baud | 403 B | 478 B | 3 B |
 
 Minimal means `src/<backend>_core.inc`; full means the existing
 `src/<backend>.inc`. Both need `src/<backend>_vars.inc` in RAM, or equivalent
@@ -52,8 +52,19 @@ using a backend: they are not identical. In particular:
   pulses the reset line of the ESP, which also resets the expansion bus.
   Optional `next_reset.inc` offers assert/release without HALT or boot waits,
   preserving the interrupt enable state for application-owned waits.
-  `uart_write_block` reads no input while it sends: at the same rate both
-  ways with both FIFOs initially empty, a send longer than 575 bytes can
+  Optional `next_flush_budget.inc` bounds recovery by a total status-sample
+  budget; `next_try_write.inc` attempts TX once so the application can service
+  RX even while TX stays full. Neither changes the compatible full include.
+  `next_tx_idle.inc` queries final serial completion; `next_baud_khz.inc`
+  exposes the two fast modes' effective rates for application-owned ESP setup.
+  Optional `next_flow.inc` controls ESP hardware flow after application-owned
+  board checks and negotiation. It preserves the previous ESP/Pi selection;
+  initialization still turns flow off.
+  The [duplex flow selection](examples/next_flow_uart.inc) combines these
+  optional controls with the core, recovery, TX idle and 2 Mbaud metadata/table:
+  367 code/read-only bytes plus the two separately allocated state bytes.
+  `uart_write_block` reads no input while it sends. With flow disabled, at the
+  same rate both ways with both FIFOs initially empty, a send longer than 575 bytes can
   overflow the RX FIFO at 115200 baud, and a shorter one at faster rates
   (329 bytes at 2000000 baud and
   28 MHz). With 128 bytes already pending, even a 512-byte send overflows.
@@ -71,6 +82,8 @@ using a backend: they are not identical. In particular:
   register; `uart_init_keep_mixer` only makes port A an output, so music
   keeps its tone and noise settings. The ESP must already run at 9600 baud
   with CTS flow control.
+  An incomplete `uart_flush` latches `UART_RX_RECOVERY` (`0x80`) and refuses
+  normal reads until a flush completes or `uart_init` clears it.
   `uart_esp_set_9600` (`src/ay_speed.inc`) sets that, **persistently**: it
   rewrites the ESP's stored configuration, which then applies to every other
   interface the module is plugged into.
@@ -198,7 +211,7 @@ initializer without an extra byte or call. The full AY include does this already
 
 ### Optional costs
 
-Each row adds only the listed code bytes, **zero state** and no selection
+Each row adds only the listed code/read-only bytes, **zero state** and no selection
 overhead in the core. Constants emit no bytes. An omitted routine has no label
 or machine code. The linker does not prune functions inside a selected object.
 
@@ -207,7 +220,7 @@ or machine code. The linker does not prune functions inside a selected object.
 | `divmmc_write.inc` / compatible A-input `uart_write` | 12 B | — | — |
 | `divmmc_tx_fail.inc` / default first-failure destination | 7 B | — | — |
 | `<backend>_ready.inc` / `uart_ready` | 12 B | 20 B | 11 B |
-| `<backend>_flush.inc` / `uart_flush` | 12 B | 43 B | 33 B |
+| `<backend>_flush.inc` / `uart_flush` | 12 B | 43 B | 38 B |
 | `<backend>_read_block.inc` / `uart_read_block` | 57 B | 49 B | 12 B |
 | `send_string.inc` / `uart_write_string` | 10 B | 10 B | 10 B |
 | `send_block.inc` / `uart_write_block` | 12 B | 12 B | 12 B |
@@ -216,6 +229,11 @@ or machine code. The linker does not prune functions inside a selected object.
 | `next_esp_reset.inc` / legacy frame-wait reset, including `next_reset.inc` | — | 35 B | — |
 | Each `next_baud_*.inc` optional table | — | 16 B | — |
 | `next_write_block.inc` / `uart_write_block_fast` | — | 46 B | — |
+| `next_try_write.inc` / `uart_try_write` | — | 29 B | — |
+| `next_flush_budget.inc` / `uart_flush_budget` | — | 52 B | — |
+| `next_tx_idle.inc` / `uart_tx_idle` | — | 13 B | — |
+| `next_baud_khz.inc` / both fast-mode effective-rate tables | — | 32 B | — |
+| `next_flow.inc` / `uart_flow_enable`, `uart_flow_disable` | — | 33 B | — |
 | `ay_init_keep_mixer.inc` / `uart_init_keep_mixer` | — | — | 14 B |
 | `ay_speed.inc` / persistent ESP rate change | — | — | 360 B |
 
@@ -227,12 +245,14 @@ TX failure byte are required by the duplex core, not by optional helpers.
 | Configuration | divMMC code + state | Next code + state | AY code + state |
 |---|---:|---:|---:|
 | Minimal compatible duplex core | 82 + 1 B | 192 + 2 B | 403 + 3 B |
-| Compatible full include | 163 + 1 B | 339 + 2 B | 473 + 3 B |
-| Full + both send helpers + all applicable optional tables/speed/fast send | 185 + 1 B | 487 + 2 B | 855 + 3 B |
+| Compatible full include | 163 + 1 B | 339 + 2 B | 478 + 3 B |
+| Optional duplex flow selection | — | 367 + 2 B | — |
+| Full + both send helpers + all applicable optional leaves/tables/speed | 185 + 1 B | 646 + 2 B | 860 + 3 B |
 
 The full Next include is 10 code bytes larger than before this split: its
 reset now shares assert/release controls that preserve IFF. The minimal core
-omits those 35 bytes entirely. AY sizes and costs are unchanged. divMMC's
+omits those 35 bytes entirely. AY's full flush adds 5 bytes for its recovery
+latch; the AY core and timed bit loops are unchanged. divMMC's
 shared fast core is 63 B with an application failure destination, or 70 B with
 the default destination; the compatible A adapter adds 12 B. This makes the
 compatible core/full selections 7 B larger and A-input TX 235 T-states instead
@@ -256,6 +276,15 @@ limits of these measurements.
   registers, and its header says where.
 
 ## Tests
+
+For an unattended Next hardware run, see [the telemetry probe](docs/next-probe.md).
+It builds a standalone NEX and collects run-matched RX/TX results over TCP.
+Its `--soak` build runs sustained duplex traffic at both rates, recording
+errors, exact payload checks, byte totals and receive/transmit overlap.
+The [one-launch battery](docs/next-batch.md) combines clock/load combinations,
+recovery checks and a two-hour endurance run in one unattended execution.
+The completed hardware run passed 44/44 cases; the report records its exact
+workload, injected faults, transferred bytes and coverage limits.
 
 ```
 python -m unittest discover tests
@@ -288,6 +317,9 @@ z88dk-z80asm build 24860-762578732c-20260630.
 - `test_ay.py`: the AY driver against a model of the AY port and an ESP at
   9600 baud. Every bit sent is decoded and every bit received is sampled in
   emulated T-states, at the 48K and 128K clocks and with the ESP 2.5 % off.
+- `test_probe_cpu.py`, `test_probe_host.py`: the hardware probe's complete AT
+  sequence, bounded reads, matrix/board selection and payloads on the CPU;
+  fragmented TCP reports, run tokens, corruption and incomplete runs on the host.
 
 ## Repository layout
 

@@ -18,7 +18,9 @@ BAUDS = (9600, 57600, 230400, 1152000, 2000000)
 PARTS = (
     ("next.inc",)
     + tuple(f"next_baud_{baud}.inc" for baud in BAUDS)
-    + ("next_write_block.inc", "send.inc", "next_vars.inc")
+    + ("next_write_block.inc", "next_flush_budget.inc", "next_try_write.inc",
+       "next_tx_idle.inc", "next_baud_khz.inc", "next_flow.inc",
+       "send.inc", "next_vars.inc")
 )
 # System clock per video timing (NextReg 0x11), from the core's nextreg.txt.
 CLOCKS = (28000000, 28571429, 29464286, 30000000, 31000000, 32000000, 33000000, 27000000)  # fmt: skip
@@ -35,6 +37,9 @@ class NextUart:
         self.reset = []  # (clock, value) written to NextReg 0x02
         self.select = []
         self.frame = []
+        self.selected = 0  # ESP=0, Pi=1; traffic below models only the ESP
+        self.prescaler_msb = [0, 0]
+        self.frame_registers = [0x18, 0x18]
         self.divisor = 0
         self.fifo = deque()  # (byte, received after an error)
         self.arrivals = deque()  # (clock, byte or None for a framing error)
@@ -90,6 +95,10 @@ class NextUart:
                 self.errors.append("data read from an empty RX FIFO")
                 return 0
             return self.fifo.popleft()[0]
+        if port == 0x153B:
+            return (self.selected << 6) | self.prescaler_msb[self.selected]
+        if port == 0x163B:
+            return self.frame_registers[self.selected]
         if port == 0x243B:
             return self.nextreg
         if port == 0x253B:
@@ -113,9 +122,13 @@ class NextUart:
                 self.divisor = (self.divisor & 0x3F80) | value
         elif port == 0x153B:
             self.select.append(value)
+            self.selected = (value >> 6) & 1
+            if value & 0x10:
+                self.prescaler_msb[self.selected] = value & 7
         elif port == 0x163B:
             self.frame.append(value)
-            if value & 0x80:
+            self.frame_registers[self.selected] = value
+            if not self.selected and value & 0x80:
                 self.fifo.clear()
                 self.tx_done.clear()
                 self.overflow = self.framing = False
@@ -163,6 +176,109 @@ class Next(unittest.TestCase):
                 )
                 self.assertEqual(divisor, best, (baud, clock))
                 self.assertLess(divisor, 1 << 14)  # bits 16..14 stay zero
+
+    def test_fast_baud_metadata_matches_the_programmed_divisors(self):
+        for baud in (1152000, 2000000):
+            address = self.d.symbols[f"uart_baud_khz_{baud}"]
+            for i, (clock, divisor) in enumerate(zip(CLOCKS, self.table(baud))):
+                khz = int.from_bytes(self.d.m.memory[address + 2*i:address + 2*i + 2],
+                                     "little")
+                self.assertEqual(khz, (clock + 500 * divisor) // (1000 * divisor))
+                self.assertLessEqual(abs(khz * 1000 - clock / divisor), 500)
+                self.assertLess(abs(khz * 1000 / (clock / divisor) - 1), 0.0005)
+
+    def test_model_frame_selection_and_divisor_write_enable(self):
+        uart = self.uart
+        uart.out(0x153B, 0x15)  # ESP upper divisor=5
+        uart.out(0x163B, 0x0D)
+        uart.out(0x153B, 0x53)  # Pi upper divisor=3
+        uart.out(0x163B, 0x72)
+        self.assertEqual((uart.inp(0x153B), uart.inp(0x163B)), (0x43, 0x72))
+        uart.out(0x153B, 0)     # selection alone must not overwrite ESP divisor
+        self.assertEqual((uart.inp(0x153B), uart.inp(0x163B)), (5, 0x0D))
+        self.assertEqual(uart.prescaler_msb, [5, 3])
+
+    def test_flow_changes_only_esp_bit5_and_preserves_traffic_and_abi(self):
+        d, uart = self.d, self.uart
+        for enabled in (False, True):
+            for selected in (0, 1):
+                for frame in range(128):  # all operational combinations, reset clear
+                    for routine, mask in (("uart_flow_enable", 0x20),
+                                          ("uart_flow_disable", 0)):
+                        with self.subTest(iff=enabled, selected=selected, frame=frame,
+                                          routine=routine):
+                            uart.selected = selected
+                            uart.prescaler_msb = [3, 5]
+                            uart.divisor = 0x1234
+                            uart.frame_registers = [frame, 0x4B]
+                            uart.fifo = deque([(0x41, False), (0x42, True)])
+                            uart.tx_done = deque([d.clock() + 1_000_000])
+                            uart.overflow = uart.framing = True
+                            d.m.memory[d.symbols["uart_rx_errors"]] = FRAMING
+                            d.m.memory[d.symbols["uart_tx_failed"]] = 2
+                            d.m.iff1 = d.m.iff2 = enabled
+                            d.io = 0
+                            self.assertLess(d.call(routine, hl=0x1234, ix=0x5678,
+                                                   iy=0x9ABC), 300)
+                            self.assertEqual(uart.frame_registers,
+                                             [(frame & 0xDF) | mask, 0x4B])
+                            self.assertEqual((uart.selected, uart.prescaler_msb, uart.divisor),
+                                             (selected, [3, 5], 0x1234))
+                            self.assertEqual((list(uart.fifo), len(uart.tx_done),
+                                              uart.overflow, uart.framing),
+                                             ([(0x41, False), (0x42, True)], 1, True, True))
+                            self.assertEqual((self.errors(), d.byte("uart_tx_failed")),
+                                             (FRAMING, 2))
+                            self.assertEqual((d.m.hl, d.m.ix, d.m.iy, d.m.sp,
+                                              d.m.iff1, d.m.iff2, d.io),
+                                             (0x1234, 0x5678, 0x9ABC, 0xFF02,
+                                              enabled, enabled, 5))
+
+    def test_flow_serializes_selection_frame_update_and_restore(self):
+        accesses = []
+
+        class Checked(NextUart):
+            def inp(uart, port):
+                accesses.append(("in", port, d.m.iff1))
+                return super().inp(port)
+
+            def out(uart, port, value):
+                accesses.append(("out", port, d.m.iff1))
+                super().out(port, value)
+
+        uart = Checked()
+        d = Driver(("next_core.inc", "next_flow.inc", "next_vars.inc"), uart)
+        uart.selected = 1
+        for routine in ("uart_flow_enable", "uart_flow_disable"):
+            accesses.clear()
+            d.m.iff1 = d.m.iff2 = True
+            d.call(routine)
+            self.assertEqual(accesses, [("in", 0x153B, False), ("out", 0x153B, False),
+                                        ("in", 0x163B, False), ("out", 0x163B, False),
+                                        ("out", 0x153B, False)])
+            self.assertEqual((uart.selected, d.m.iff1, d.m.iff2), (1, True, True))
+        self.assertEqual(uart.errors, [])
+        d.call("uart_init")
+        self.assertEqual(uart.frame_registers[0], 0x18, "init always turns flow off")
+
+    def test_tx_idle_includes_the_last_byte_on_the_wire_and_keeps_rx_errors(self):
+        d, uart = self.d, self.uart
+        uart.byte = 10000
+        d.call("uart_write", a=0x55)
+        uart.feed([None, 0x41])
+        d.io = 0
+        d.call("uart_tx_idle", de=0x1234, hl=0x5678, ix=0x1357, iy=0x2468)
+        self.assertEqual((d.carry, d.io, self.errors()), (False, 1, FRAMING))
+        self.assertEqual((d.m.de, d.m.hl, d.m.ix, d.m.iy, d.m.iff1),
+                         (0x1234, 0x5678, 0x1357, 0x2468, False))
+        self.assertEqual(len(uart.fifo), 1, "the query must not consume RX")
+        # The model tracks completion of the last serial byte, not only FIFO room.
+        d.elapsed = uart.tx_done[-1]
+        d.call("uart_tx_idle")
+        self.assertTrue(d.carry)
+        d.m.memory[d.symbols["uart_tx_failed"]] = 2
+        d.call("uart_tx_idle")
+        self.assertEqual((d.carry, d.byte("uart_tx_failed")), (True, 2))
 
     def test_init_programs_the_uart(self):
         d = self.d
@@ -312,6 +428,111 @@ class Next(unittest.TestCase):
                 (d.m.a, d.m.bc, d.m.de, d.m.hl), (byte, 0x1111, 0x2222, 0x3333)
             )
         self.assertEqual(self.uart.sent, b"AT\r\n")
+
+    def test_flush_budget_bounds_drip_that_restarts_each_quiet_window(self):
+        class Drip(NextUart):
+            samples = 0
+
+            def inp(uart, port):
+                if port == 0x133B:
+                    uart.samples += 1
+                    if uart.samples % 2047 == 0 and uart.samples <= 8 * 2047:
+                        uart.feed(b"X")
+                return super(Drip, uart).inp(port)
+
+        for routine in ("uart_flush", "uart_flush_budget"):
+            with self.subTest(routine=routine):
+                uart = Drip()
+                d = Driver(PARTS, uart)
+                took = d.call(routine, de=4096, hl=0x4321, ix=0x1234, iy=0x5678)
+                self.assertEqual((d.m.hl, d.m.ix, d.m.iy, d.m.iff1),
+                                 (0x4321, 0x1234, 0x5678, False))
+                if routine == "uart_flush":
+                    self.assertEqual((d.carry, uart.samples), (False, 8 * 2047 + 2048))
+                else:
+                    self.assertLess(took, 500_000)
+                    self.assertEqual((d.carry, uart.samples, d.byte("uart_rx_errors")),
+                                     (True, 4096, OVERFLOW))
+                    d.io = 0
+                    d.call("uart_read")
+                    self.assertEqual((d.carry, d.io), (False, 0))
+                    uart.samples = 8 * 2047  # stop the source, then recover
+                    d.call(routine, de=2048)
+                    self.assertEqual((d.carry, d.byte("uart_rx_errors")), (False, 0))
+                self.assertEqual(uart.errors, [])
+
+    def test_flush_budget_boundaries_and_error_capture(self):
+        for budget in (1, 2047, 2048, 4096):
+            with self.subTest(budget=budget):
+                uart = NextUart()
+                d = Driver(PARTS, uart)
+                uart.feed([None])
+                d.io = 0
+                d.call("uart_flush_budget", de=budget)
+                self.assertEqual(d.io, min(budget, 2048))
+                self.assertEqual((d.carry, d.byte("uart_rx_errors")),
+                                 (True, FRAMING | OVERFLOW) if budget < 2048 else (False, 0))
+                self.assertEqual(uart.errors, [])
+
+        class Continuous(NextUart):
+            def inp(uart, port):
+                if port == 0x133B:
+                    uart.feed(b"X")
+                return super(Continuous, uart).inp(port)
+
+        uart = Continuous()
+        d = Driver(PARTS, uart)
+        d.call("uart_flush_budget", de=0)
+        self.assertEqual((d.carry, d.io, d.byte("uart_rx_errors")),
+                         (True, 2 * 65536, OVERFLOW))
+        self.assertEqual(uart.errors, [])
+
+    def test_try_write_samples_once_and_distinguishes_busy_from_failure(self):
+        d, uart = self.d, self.uart
+        for failed, full, sent, samples in ((0, False, True, 2), (0, True, False, 1),
+                                            (1, False, False, 0), (2, False, False, 0)):
+            with self.subTest(failed=failed, full=full):
+                d.m.memory[d.symbols["uart_tx_failed"]] = failed
+                uart.tx_stuck = full
+                uart.feed([None])
+                before = bytes(uart.sent)
+                d.io = 0
+                took = d.call("uart_try_write", a=0xA5, bc=0x1111, de=0x2222,
+                              hl=0x3333, ix=0x1234, iy=0x5678)
+                self.assertLess(took, 350)
+                self.assertEqual((d.carry, d.io, d.byte("uart_tx_failed")),
+                                 (not sent, samples, failed))
+                self.assertEqual((d.m.a, d.m.bc, d.m.de, d.m.hl, d.m.ix, d.m.iy,
+                                  d.m.sp, d.m.iff1),
+                                 (0xA5, 0x1111, 0x2222, 0x3333, 0x1234, 0x5678,
+                                  0xFF02, False))
+                self.assertEqual(bytes(uart.sent), before + (b"\xA5" if sent else b""))
+                if samples:
+                    self.assertEqual(d.byte("uart_rx_errors"), FRAMING)
+
+    def test_try_write_allows_rx_service_while_tx_stays_full(self):
+        for spacing in (140, BYTE):
+            with self.subTest(spacing=spacing):
+                uart = NextUart()
+                d = Driver(PARTS, uart)
+                uart.tx_stuck = True
+                data = bytes((7 * i) & 255 for i in range(1024))
+                uart.feed(data, spacing=spacing)
+                end = BUFFER
+                for _ in range(128):
+                    d.call("uart_try_write", a=0x55)
+                    self.assertTrue(d.carry)
+                    d.call("uart_read_block", hl=end, b=32)
+                    end = d.m.hl
+                    if not (uart.arrivals or uart.fifo):
+                        break
+                self.assertEqual(bytes(d.m.memory[BUFFER:end]), data)
+                self.assertEqual((d.byte("uart_tx_failed"), d.byte("uart_rx_errors"),
+                                  uart.overflow), (0, 0, False))
+                uart.tx_stuck = False
+                d.call("uart_try_write", a=0x55)
+                self.assertEqual((d.carry, bytes(uart.sent)), (False, b"\x55"))
+                self.assertEqual(uart.errors, [])
 
     def test_write_waits_for_room(self):
         d = self.d

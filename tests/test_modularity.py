@@ -13,14 +13,15 @@ from ay_model import AyUart
 
 BSS = 0xC000
 CORE = {"divmmc": 82, "next": 192, "ay": 403}
-COMPLETE = {"divmmc": 163, "next": 339, "ay": 473}
-ALL = {"divmmc": 185, "next": 487, "ay": 855}
+COMPLETE = {"divmmc": 163, "next": 339, "ay": 478}
+ALL = {"divmmc": 185, "next": 646, "ay": 860}
 STATE = {"divmmc": 1, "next": 2, "ay": 3}
 LEAVES = {
     "divmmc": {"ready": 12, "flush": 12, "read_block": 57},
     "next": {"ready": 20, "flush": 43, "read_block": 49, "reset": 24,
-             "esp_reset": 35, "baud_9600": 16},
-    "ay": {"ready": 11, "flush": 33, "read_block": 12},
+             "esp_reset": 35, "baud_9600": 16, "try_write": 29, "flush_budget": 52,
+             "tx_idle": 13, "baud_khz": 32, "flow": 33},
+    "ay": {"ready": 11, "flush": 38, "read_block": 12},
 }
 
 
@@ -64,11 +65,17 @@ class Modularity(unittest.TestCase):
             self.assertEqual(len(blocks[ORG]), code + 10)  # caller costs 10 bytes
             self.assertEqual(len(blocks[BSS]), STATE[backend])
             for label in ("uart_ready", "uart_flush", "uart_read_block",
+                          "uart_try_write", "uart_flush_budget", "uart_tx_idle",
+                          "uart_flow_enable", "uart_flow_disable",
                           "uart_esp_reset", "uart_init_keep_mixer",
                           "uart_write_string", "uart_write_block"):
                 present = bool(re.search(rf"^{label}: EQU", (tmp / "sj.sym").read_text(), re.M))
                 self.assertEqual(label in symbols, present)
             return linked
+
+    def test_next_flow_selection_example(self):
+        parts = ((ROOT / "examples" / "next_flow_uart.inc").as_posix(),)
+        self.check_configuration("next", parts, 367)
 
     def test_minimal_and_complete_assemble_and_link(self):
         for backend in CORE:
@@ -92,6 +99,8 @@ class Modularity(unittest.TestCase):
                     self.assertEqual((d.m.ix, d.m.iy, d.m.sp), (0x1234, 0x5678, 0xFF02))
                     if mode:
                         for label in ("uart_ready", "uart_flush", "uart_read_block",
+                                      "uart_try_write", "uart_flush_budget",
+                                      "uart_flow_enable", "uart_flow_disable",
                                       "uart_esp_reset", "uart_init_keep_mixer"):
                             self.assertNotIn(label, d.symbols)
                     self.assertEqual(device.errors, [])

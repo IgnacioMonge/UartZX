@@ -51,3 +51,21 @@ revisions:
 Not compared: the C layer behind NetChessZX's `uart.h` and the receive loop
 BridgeZX inlines in its `net.asm`. Both are application code built on the
 driver.
+
+## External comparison follow-up (2026-11-17)
+
+The detailed [individual comparisons](external-comparisons.md) use these pinned
+sources. Original external code is kept only as ignored working evidence,
+not redistributed with UartZX. A source review is not a complete application
+build or physical validation.
+
+| Reference | Revision | Scope |
+|---|---|---|
+| Jari Komppa NextSync | `d80df1262f19e8cca4ae2a438b089ed800d497a7` | `sync/uart.s`, UART/AT paths in `sync/nextsync.c` |
+| ZX-Next-Unite NextSync | `d7d52c159ae549f8b71c6e64459c2a248c2d7219` | `uart.asm`, UART setup, baud/flow negotiation and recovery in `nextsync.c` |
+| z88dk plus3 RS232 | `0c92d7bdbd6119a151d03599a72ce1b8635d1703` | get/put/params assembly, `include/rs232.h` |
+| TBBlue distribution | `3a892b03738cfb27eee01f33d09186d3215a5a4a` | `src/asm/uart/uartdrv.asm`, container; ESPAT Alpha 10 stub/container, not extended SYS body |
+| NXtel | `9d84144fab283896b02070c947603f7f9775382e` | `src/esp.asm`, ESPAT API consumer and historical README |
+| newt | `b150c809c7e0bff723fc4cca319c33d495cc96e0` | `uart.c`, `timer.h`, BREAK/cleanup in `main.c` |
+| Moon Rabbit ZX | `2db3c17174907536aa2fb6efcb64f23745bd6f5a` | `drivers/ay-uart.asm`, `drivers/uno-uart.asm`, repository licence |
+| Next FPGA TX completion | `01e322a39360f4ae89b0c575b7aacae0d2441416` | `cores/zxnext/src/serial/uart.vhd`: status bit 4 combines empty FIFO and idle transmitter |

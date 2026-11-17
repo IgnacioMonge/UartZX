@@ -9,6 +9,52 @@ from its first release.
 
 ### Added
 
+- Standalone Next diagnostic NEX and a dependency-free host collector for
+  unattended, run-matched TCP telemetry: RX loss/backpressure and verified TX
+  patterns at 115200 and near 2 Mbaud, board-gated flow selection, bounded waits,
+  structured logs, CPU/protocol and loopback tests, and operating instructions.
+  One real Next run verifies lossless paused RX with flow at both rates,
+  overflow in the no-flow controls and exact TX patterns in all four rows.
+- Optional sustained-duplex probe build: timed phases at both Next UART rates,
+  concurrent host traffic, incremental RX service during AT/TX waits, per-chunk
+  integrity and overlap checks, and accumulated telemetry with bounded waits.
+  Five minutes per rate on a real Next completed all 1492 chunks without
+  integrity/UART errors, with RX/TX overlap measured in every chunk.
+- One-launch Next validation battery with symmetric traffic, CPU and 50/60 Hz
+  cases, planned fault/recovery checks and two-hour endurance; the collector
+  validates the complete manifest, reconnects for planned TCP resets and keeps
+  Windows awake temporarily. Integration guidance now distinguishes no-flow
+  FIFO budgets from explicitly negotiated hardware flow.
+  Reconnection requires fresh pattern data; missing/reordered AT notices remain
+  diagnostic. Recoverable failed cases are retained while later cases run, and
+  initial connection wait does not consume the active test budget.
+  The completed hardware battery passes 44/44 cases, including all four CPU
+  selections, both frame modes, injected recovery checks and over two hours of
+  symmetric endurance with 169443328 B of verified payload.
+- Ready-to-include Next duplex flow selection, with 115200/2 Mbaud support,
+  immediate TX, bounded recovery and wire-idle query: 367 code/read-only bytes
+  and two separately allocated state bytes. Both assemblers and a separate-object
+  link verify the selection; individual leaves remain available.
+- Optional Next `next_flow.inc`: `uart_flow_enable` / `uart_flow_disable`
+  change only the ESP UART's hardware-flow bit and restore the previous
+  ESP/Pi selection without rewriting divisors. The 33-byte leaf preserves
+  interrupt state, adds no writable state, and keeps board/ESP negotiation
+  in the caller. Tests cover frame/selection isolation, live traffic and
+  error preservation, interrupts, both assemblers and independent linking.
+- Optional Next `uart_tx_idle` query (13 code bytes) that checks final serial
+  completion while retaining RX errors, and effective-rate metadata for both
+  fast baud modes (32 read-only bytes), without new writable state or core cost.
+- Detailed, version-pinned comparisons with NextSync, z88dk AY, UART.DRV/ESPAT,
+  NXtel, newt and Moon Rabbit ZX, including local extracted-routine experiments
+  and explicit limits on hardware, OS, parser and complete-build evidence.
+- Optional Next `uart_flush_budget` with a caller-owned total sample budget,
+  independent of the quiet window, and `uart_try_write` with one status sample
+  and retryable busy distinct from the existing TX failure latch. Both retain
+  RX error capture and interrupt state, cost 52/29 code bytes, add no state,
+  and leave the core and compatible full Next include unchanged.
+- Portable one-step RX example for all three backends, assembled and executed
+  in tests; integration contracts cover AY cache-only readiness, interrupt
+  behavior and the divMMC flush's fixed-poll guarantee.
 - Selectable `<backend>_core.inc` and optional ready, flush and block-read
   includes, plus independent string/block send helpers and AY mixer-preserving
   initialization. Compatible duplex cores emit 82/192/403 code bytes and 1/2/3 state
@@ -92,8 +138,8 @@ from its first release.
   acceptance, so the `uart_esp_reset` hold is checked against 25 real
   frames.
 - Documented limits: on the Next, `uart_write_block` reads no input while it
-  sends, so at the same rate both ways input is lost past 575 bytes at
-  115200 baud and past 329 at 2000000 baud and 28 MHz; `uart_esp_reset` also
+  sends, so with flow disabled and the same rate both ways input is lost past
+  575 bytes at 115200 baud and past 329 at 2000000 baud and 28 MHz; `uart_esp_reset` also
   resets the expansion bus; `docs/design.md` gives the worst rate error of
   each divisor table, 3.57 % at 2000000 baud over HDMI. On the AY, 9600 baud
   is the only rate the tests check.
@@ -117,7 +163,8 @@ from its first release.
   No consumer is migrated automatically.
 - Full Next code grows by 10 bytes to share interrupt-state-preserving reset
   controls (339 code + 2 state bytes); minimal builds omit all reset code.
-  Next read/write instruction costs and AY code sizes are unchanged.
+  Next read/write instruction costs are unchanged. AY full code is 478 bytes;
+  its core and timed bit loops are unchanged.
 - Compatible divMMC core/full includes retain all public entries and register
   contracts through the optional A adapter. Sharing the L-input algorithm
   costs 7 additional code bytes, 37 T-states and 2 temporary stack bytes for
@@ -125,3 +172,14 @@ from its first release.
   Fast Classic omits this adapter and replaces the previous 116 B/256 T
   integration with 90 B/150 T. The default nonzero failure value is now 1
   instead of 0x41; existing nonzero states remain unchanged on later sends.
+
+### Fixed
+
+- An incomplete AY flush now latches `UART_RX_RECOVERY` (`0x80`), clears its
+  second-byte cache and blocks normal RX until a later flush completes or
+  initialization clears it; clean over-budget streams and stuck-low lines
+  both retain the recovery requirement.
+- AY test model now applies R7's port direction to TX/CTS and RX reads,
+  including latch writes during input mode and direction changes by music.
+  Regressions cover these cases, Next recovery under drip input, and RX
+  service during stalled TX using the immediate write primitive.

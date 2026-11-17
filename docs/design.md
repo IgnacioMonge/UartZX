@@ -19,7 +19,7 @@ the other routines are optional leaves. The README lists emitted costs and
 | `uart_read_raw` | | As `uart_read`, ignoring earlier receive errors. On the Next and the AY, the read that latches a new error reports no byte |
 | `uart_ready` | | CF=1 when `uart_read` would return a byte; nothing is consumed |
 | `uart_write` | A = byte | CF=0 sent, CF=1 not sent. Preserves A, BC, DE, HL |
-| `uart_flush` | | Discards pending input and clears receive errors. CF=1 (Next, AY): it gave up with input still arriving, and on the Next reads stay refused until a flush completes |
+| `uart_flush` | | Discards pending input and clears receive errors on success. CF=1 (Next, AY): it gave up with input still arriving; reads stay refused until a flush completes or init |
 | `uart_read_block` | HL = buffer, B = room | HL = next free position, D = room left, CF=1 buffer full |
 | `uart_write_string` (`send.inc`) | HL = NUL-terminated text | CF=1 and HL at the unsent byte on failure |
 | `uart_write_block` (`send.inc`) | HL = data, BC = length | CF=1, HL and BC at the unsent byte on failure |
@@ -175,7 +175,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | One-byte RX cache, peek with value | BridgeZXadv | Dropped | The FIFO keeps the byte; `uart_ready` is status only |
 | TX refuses while RX errors are latched | BridgeZXadv, NetChessZX (C layer) | Dropped | RX health does not decide whether a byte can be queued; the application can test `uart_rx_errors` |
 | Bounded TX wait with a failure latch | SpecTalkZX, BitStream | Taken, 4096 samples | Over ten byte times at 9600 baud and 28 MHz (the NetManZX sizing). 256 samples (BridgeZXadv, NetChessZX) are under one byte there |
-| RX moved into a ring during a TX wait | SpecTalkZX, BitStream | Application-owned | Driver remains ring-independent. A healthy TX wait is at most one byte time, but the full failure timeout is longer. Whole block sends read no input: with both FIFOs empty the model loses input past 575 TX bytes at 115200/3.5 MHz, or 329 at 2000000/28 MHz (218 T/byte loop); fast block send moves the latter to 573 (101 T/byte, no physical wait states). With 128 RX bytes pending even a 512-byte send overflows. `integration.md` specifies occupancy/time budgets, tested RX service before sends, and application polling with RX service for stalled TX |
+| RX moved into a ring during a TX wait | SpecTalkZX, BitStream | Application-owned | Driver remains ring-independent. A healthy TX wait is at most one byte time, but the full failure timeout is longer. With flow disabled, whole block sends read no input: with both FIFOs empty the model loses input past 575 TX bytes at 115200/3.5 MHz, or 329 at 2000000/28 MHz (218 T/byte loop); fast block send moves the latter to 573 (101 T/byte, no physical wait states). With 128 RX bytes pending even a 512-byte send overflows. `integration.md` specifies occupancy/time budgets, tested RX service before sends, and application polling with RX service for stalled TX |
 | Baud tables: 115200, 230400, 2000000 | BridgeZXadv | Taken | 115200 in the driver; every other rate is a 16-byte file an application includes only if it uses it |
 | Baud tables: 9600, 57600, 1152000 | NetManZX | Taken | Same |
 | 2000000 baud table | BridgeZXadv and NetManZX disagree | The BridgeZXadv values | Nearest divisors; a test checks every table against the documented clocks |
@@ -193,7 +193,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | 28 MHz turbo | BridgeZXadv, BitStream | Left to the application | Not a UART matter |
 | 50/60 Hz detection | NetChessZX | Left to the application | Timeout pacing, not a UART matter |
 | Read timeouts counted in frames | NetManZX | Left to the application | Depends on the ROM frame counter and the keyboard |
-| Hardware flow control | none | Not taken | Only issue 4 boards; no application uses it. Backlog |
+| Hardware flow controls | NextSync configuration pattern | Optional `next_flow.inc` | 33 B, no state: change only ESP frame bit 5, restore UART selection and preserve IFF. Board/pin capability, ESP negotiation, deadlines and fallback stay in the caller; init keeps flow off |
 | Block send with the status test inline | none | Added as `uart_write_block_fast`, optional file `next_write_block.inc` | 101 T-states a byte instead of 218 through `send.inc`, which at 28 MHz cannot keep up with 2000000 baud. Both counts leave out the Next's wait states. Same checks: a not-full status read that keeps the receive errors before every byte, the wait of `uart_write` on a full FIFO, the failure latch. A test runs both senders through the same five cases and compares every result. External audit |
 
 ### Numbers
@@ -287,8 +287,10 @@ the three drivers agree on and from the AY-3-8912 register set.
 - **Interrupts** are enabled on return from every routine that touches the
   port. A frame interrupt that falls inside one is lost.
 - **`uart_write`** always returns CF=0 and there is no `uart_tx_failed`: the
-  port has no status. `uart_rx_errors` only ever holds `UART_RX_FRAMING`,
-  set by a stop bit that reads low.
+  port has no status. `uart_rx_errors` holds `UART_RX_FRAMING` (`0x40`) for
+  a stop bit read low, or `UART_RX_RECOVERY` (`0x80`) after an incomplete
+  flush. Recovery is not a synthetic framing error: a clean stream that
+  exceeds the discard budget also needs a later completed flush or init.
 - **`uart_read_block` and `uart_flush`** end with a 3.9 ms timeout instead of
   returning at once.
 - **Placement.** The code and the stack must be in uncontended memory:

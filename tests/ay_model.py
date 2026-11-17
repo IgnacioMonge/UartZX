@@ -4,6 +4,7 @@ Port A (register 14): bit 3 = TX to the ESP, bit 2 = CTS to the ESP (low lets
 it send), bit 7 = RX from the ESP. The port is an open-drain output, so RX
 reads the line only while its latch bit is 1. Ports are decoded like a 128K:
 only A15, A14 and A1 matter, and every address used is recorded.
+R7 bit 6 enables the output latch; input mode releases the pulled-up pins.
 """
 
 from collections import deque
@@ -101,7 +102,7 @@ class AyUart:
         if self.reg != 14:
             return self.regs[self.reg]
         self._advance()
-        latch = self.regs[14]
+        latch = self.regs[14] if self.regs[7] & 0x40 else 0xFF
         return (latch & 0x7F) | (0x80 if latch & 0x80 and self.rx_level() else 0)
 
     def out(self, port, value):
@@ -110,9 +111,10 @@ class AyUart:
             self.reg = value & 0x0F
         elif port & 0xC002 == 0x8000:
             self._advance()
-            before = self.regs[self.reg]
+            before = self.regs[14] if self.regs[7] & 0x40 else 0xFF
             self.regs[self.reg] = value
-            if self.reg == 14:
+            if self.reg in (7, 14):
+                value = self.regs[14] if self.regs[7] & 0x40 else 0xFF
                 if (before ^ value) & 0x08 or not self.tx:
                     self.tx.append((self.clock(), (value >> 3) & 1))
                 if value & 0x04:

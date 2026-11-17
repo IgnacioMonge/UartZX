@@ -260,6 +260,24 @@ optional explicit discard policy: on Next it waits for a quiet window and
 may give up with reads still gated. `uart_init` is not a substitute for RX
 recovery either: it also clears fail-stop, resets TX FIFO and resets baud.
 
+For a caller that wants the driver's quiet-window policy with bounded total
+work, select `next_flush_budget.inc` after `next_core.inc` (or `next.inc`).
+`uart_flush_budget` takes DE = total status samples, 1..65535, with 0 meaning
+65536. Every poll counts, whether empty or carrying a byte; incoming data
+restarts only the `UART_FLUSH_QUIET` consecutive-empty window. Use a budget
+at least that large (2048) to allow success. For example, DE=4096 limits one
+call to 4096 status reads, even with one byte near the end of every quiet
+window. Smaller budgets always fail to establish silence. This is a work
+bound, not a wall-clock deadline: interrupts, contention and wait states
+still add time. The original `uart_flush` retains its existing behavior.
+
+CF=0 means the quiet window completed and `uart_rx_errors` is clear. CF=1
+means recovery remains incomplete: `UART_RX_OVERFLOW` is latched, including
+any hardware errors observed along the way, and guarded RX stays blocked.
+Handle UI/deadlines between calls; finish a later flush before reopening the
+stream. No quiet-window progress is retained between calls. The routine
+destroys A/BC/DE, preserves HL and IFF, adds 52 code bytes and no state.
+
 Do not blindly alias `uart_rx_errors` to `_next_uart_gap`. They currently
 have different representations and lifetimes: a hardware bitmap versus a
 transaction/parser notification. Reuse storage only if all reads accept a
@@ -271,7 +289,7 @@ it; the additional byte preserves a different responsibility.
 
 The driver does not own a ring or call application code. A generic block
 send does not receive while sending; a faster sender changes the time budget
-but does not remove this obligation. With equal-rate traffic, 512 TX bytes
+but does not remove this obligation. With flow disabled and equal-rate traffic, 512 TX bytes
 and 128 RX bytes pending overflow in the model at 115200/3.5 MHz, despite
 the empty-FIFO 575-byte figure. Never use that figure as a chunk limit.
 
@@ -285,6 +303,13 @@ If R is unknown, drain first; if the application ring has no room, stop,
 parse existing data or declare a loss explicitly. A larger TX FIFO does not
 increase the RX budget. RX service must sustain at least `b/10` bytes/s on
 average, not only meet one chunk deadline.
+
+After board checks and successful ESP RTS/CTS negotiation, `next_flow.inc`
+lets the hardware throttle arrivals when the FIFO fills. A slower parser can
+then reduce throughput instead of overflowing the UART FIFO; the no-flow
+occupancy equation above describes the fallback path. Continue receiving during
+TX retries, preserve error capture and bound every transaction: FIFO flow does
+not provide an application buffer, parser recovery or a network deadline.
 
 The assembled test consumer `tests/next_duplex.inc` drains up to 32 bytes
 **before every one-byte TX** into a linear buffer. A ring consumer supplies
@@ -306,16 +331,148 @@ ISR, physical wait states or full application ring. It demonstrates a
 schedule, not a universal safe chunk size or throughput guarantee.
 
 For RX progress **even when TX stalls**, preserve SpecTalkZX's scheduling
-outside the writer: service RX with room, read TX status with error capture,
-publish RX faults, and only call `uart_write` once room is available. Use an
-application deadline/poll budget; on exhaustion invoke `_uart_tx_fail` and
-stop. With one TX owner, the FIFO cannot become fuller between the room
-sample and the write. Polling repeatedly must continue to service RX; every
-status read must latch errors. The core's bounded blocking writer remains
-the safety net, but its full timeout can itself exceed the RX FIFO's fill
-time. One-byte scheduling alone cannot guarantee RX continuity through a
-stuck transmitter. No callback was added: application scheduling already has
-the ring room, overlay ownership and recovery information the driver lacks.
+outside the writer: service RX with room, attempt TX and publish RX faults.
+Select `next_try_write.inc` after the core or full include and call
+`uart_try_write` with A = byte. It takes at most one status sample, captures
+its RX errors and queues only when there is room. CF=0 means queued; CF=1
+with `uart_tx_failed=0` means temporarily full, so keep the byte/pointer and
+service RX before retrying. CF=1 with a nonzero latch means a previous
+blocking write failed; no status port is touched in that case. Busy never
+sets the TX failure latch. A/BC/DE/HL and IFF are preserved; cost is 29 code
+bytes and no state. Publish RX faults even when TX succeeds or is busy.
+
+Use an application deadline/poll budget; on exhaustion invoke the existing
+TX failure/disconnect path and stop. One TX owner must serialize UART writes.
+The core's bounded blocking writer remains available, but its full timeout
+can itself exceed the RX FIFO's fill time. One-byte scheduling alone cannot
+guarantee RX continuity through a stuck transmitter. The regression services
+RX between immediate attempts with TX stuck full and preserves 1024 incoming
+bytes at 140 and 304 T-states/byte. It uses a linear buffer with room and no
+competing work; an application must establish its own ring and timing budget.
+
+## Next TX completion and effective fast rates
+
+Select `next_tx_idle.inc` after the Next core or full include. `uart_tx_idle`
+returns CF=1 when status bit 4 says both FIFO and serializer are idle; CF=0
+while bytes remain queued or on the wire. It samples once, keeps RX errors,
+destroys A/BC and preserves DE/HL/IFF. Cost: 13 code bytes, no state. It does
+not clear `uart_tx_failed` or consume RX. Only use it on cores supporting
+that status bit; NextSync guards its wait at core 3.01.10. The caller bounds
+the wait, services RX and ensures no writer queues more data before changing
+baud or resetting. There is no implicit TX wait inside `uart_set_baud`.
+
+For the two fast divisor tables, optional `next_baud_khz.inc` supplies
+`uart_baud_khz_1152000` and `uart_baud_khz_2000000`: eight 16-bit values each,
+indexed by `NextReg 0x11 & 7`, with the same clock order as the divisor tables.
+Render the selected integer in decimal and append three zeroes when forming
+the application's ESP command. For example, timing 7 (HDMI) at the nominal
+2 Mbaud setting gives 1929, so ask the ESP for 1929000 before following with
+the corresponding divisor. The divisor produces approximately 1928571 baud;
+this metadata is rounded to the nearest kHz, not an oscillator measurement.
+All 16 combinations are tested against the actual divisor tables; rounding
+differs by at most 500 baud and below 0.05%. Both metadata rows cost 32 bytes,
+zero code and no writable state; slower rates and AT formatting stay out.
+
+Baud changes still require the consumer's protocol: complete old TX, send the
+ESP command at its current rate, handle its response/transition, change the
+FPGA divisor, probe the new rate and recover if needed. A missing response
+does not prove that the ESP rejected the change. The detailed
+[NextSync comparison](external-comparisons.md#1-nextsync-original-and-zx-next-unite-derivative)
+also covers flow negotiation, which remains application-owned and disabled
+by default in UartZX. No command or hardware flow setting is applied by these
+two optional includes.
+
+## Optional Next hardware flow controls
+
+Include `next_flow.inc` after `next_core.inc` or `next.inc`. It supplies
+`uart_flow_enable` and `uart_flow_disable`, with no input parameters or success
+result. Both target the ESP UART, change only frame-register bit 5 and restore
+the previous ESP/Pi selection. They do not latch prescaler bits or change
+either baud divisor. Frame size, parity, stop bits and break remain unchanged.
+Call after initialization with frame reset clear; neither helper clears FIFOs,
+consumes RX/TX data, reads status or clears hardware/software error latches.
+
+The sequence saves IFF, disables maskable interrupts around select/read/modify/
+write/restore, and restores IFF on exit. HL/IX/IY and alternate registers are
+preserved; AF/BC/DE are destroyed. Cost: 33 code bytes, zero persistent state
+and two temporary stack bytes. NMI handlers must not access UART registers
+during the sequence. There are no waits, AT commands or capability probes.
+The compatible full include and minimal core do not pull this leaf in;
+`uart_init` still selects the ESP, resets FIFOs and sets 8N1 with flow off.
+For a separate z88dk object, export the selected entry points with PUBLIC as
+for the other optional leaves.
+
+The caller owns the operational sequence:
+
+1. Establish known board/pin support. The manual identifies ESP flow on Issue
+   4 and no equivalent on Issue 2; reject unknown capability. GPIO routing,
+   core support and ESP firmware must agree with the intended connection.
+2. Keep FPGA flow off while configuring the ESP for RTS+CTS. If baud changes,
+   use the old-rate drain/new-rate probe sequence above. Confirm the command
+   and working communication before calling `uart_flow_enable`.
+3. Continue servicing RX and bounding TX waits. Flow can legitimately pause
+   TX for a long time; `uart_try_write` lets the application keep progressing.
+4. On teardown or failed negotiation, call `uart_flow_disable` before the
+   application's ESP restore/reset/fallback path. Clearing flow can release
+   queued TX bytes: the caller must own that queue/transaction decision.
+   This does not clear `uart_tx_failed` or establish a new valid RX stream.
+
+Enabling a bit is not evidence that the board or ESP accepted flow control.
+The regression model covers both UARTs' frame/select readback, all 128 frame
+configurations with reset clear, both initial UART selections and IFF states,
+repeat enable/disable, divisor preservation, unchanged queued traffic/error
+state, and interrupt exclusion for every control-port access. It does not
+simulate RTS/CTS electrical timing or validate negotiation with a real ESP.
+
+The separate [hardware probe](next-probe.md) did validate RX backpressure on one
+real Next on 2026-11-17: 4096 bytes arrived intact at 115200 and 2000000 after a
+ten-frame RX pause with flow enabled; both no-flow controls overflowed. All four
+2048-byte TX patterns matched on the host. This is a bounded board-specific
+experiment, not evidence for every board, sustained duplex or forced TX stalls.
+
+A later [sustained duplex run](next-probe.md#observed-sustained-duplex-run-2026-11-17)
+completed five minutes per rate on the same Next: all 1492 chunks passed, totaling
+12222464 B into the Next and 3055616 B back, with RX service overlapping payload
+TX in every chunk and no UART errors. This extends the evidence to the probe's
+paced workload; symmetric saturation, forced CTS stalls, other boards and
+consumer adoption still require separate checks.
+
+The library integration consists of selecting `next_flow.inc` with the existing
+`next_try_write.inc`, `next_flush_budget.inc`, `next_tx_idle.inc` and optional
+baud metadata as needed. Their public entry points, register/IFF contracts and
+costs are documented and checked with both assemblers and separate-object
+links. Capability checks and ESP AT setup remain explicit caller operations;
+the diagnostic NEX supplies a hardware-validation caller. See the
+[one-launch battery](next-batch.md) for extended validation of these same leaves.
+
+[`examples/next_flow_uart.inc`](../examples/next_flow_uart.inc) supplies that
+selection as one include: core, immediate TX, budgeted recovery, wire-idle query,
+flow controls, effective-rate metadata and the 2000000 divisor table. It emits
+367 code/read-only bytes; allocate `next_vars.inc` separately in writable RAM
+(two bytes). The example adds no entry points or state of its own. Its regression
+assembles identical bytes with sjasmplus/z88dk and links code and state in
+separate objects. Flow remains opt-in after board/ESP negotiation.
+
+## One receive step on all three backends
+
+[`examples/receive_once.inc`](../examples/receive_once.inc) provides
+`receive_step`: HL points to writable room for one byte. Call it directly on
+each application iteration. CF=1 stores a byte and advances HL; CF=0 leaves
+HL and the destination alone. The caller must bound the destination before
+each call and own the overall receive deadline, parsing and recovery.
+
+| Backend | Scheduling and recovery |
+|---|---|
+| divMMC / ZX-Uno | Read is immediate and preserves IFF. Flush makes 512 fixed polls and returns success; it does not certify silence or the end of a response. |
+| Next | Read is immediate and preserves IFF. On `uart_rx_errors != 0`, stop delivery and recover. Use immediate TX attempts to keep servicing RX during TX stalls. |
+| AY | Call read even when `uart_ready` reports CF=0: ready sees only the cached second byte and never opens CTS. A read may wait about 3.9 ms with interrupts off and returns with them enabled. Music must keep R7 bit 6 set. |
+
+On AY, an incomplete flush sets `UART_RX_RECOVERY=0x80`; a bad stop bit sets
+`UART_RX_FRAMING=0x40`. Test for nonzero to gate the stream, and retry flush
+or explicitly reinitialize before resuming. A completed flush clears both.
+Raw-read users still own error transfer and resynchronization. The example
+is assembled with both assemblers and run with each backend, including AY's
+ready=false before receiving the ESP's first byte and the differing IFF exits.
 
 ## Reset, waits and overlays
 
@@ -348,8 +505,16 @@ the ESP or wait for boot. AY init still returns with interrupts enabled.
 
 Assembly sizes, separate-object links, error/ABI/timing tests and FIFO/AY
 models are local verification. No consumer was migrated, no complete
-SpecTalkZX link or overlay budget was validated, and no physical UART,
-turbo/wait-state, bus-reset or interrupt-load test was run. Next RX service
-under stalled TX and a full ring still needs a consumer implementation and
-its own regression/hardware evidence. AY's existing provenance/licence
-qualification in the README remains. Hardware adoption is pending.
+SpecTalkZX link or overlay budget was validated. Physical Next UART RX/TX and
+RX flow have the measured evidence linked above. Next RX service
+under stalled TX is covered by the linear-buffer model; a real consumer,
+especially a full ring, still needs its own regression/hardware evidence.
+The [complete Next battery](next-batch.md#completed-repaired-battery-2026-11-17)
+passed 44 cases, including actual CPU selections at both UART rates, 50/60 Hz,
+the injected recovery checks and two hours of symmetric endurance. No physical
+AY/divMMC, bus-reset or competing interrupt-load check, or other VGA/HDMI
+clock-timing sweep, is claimed. Consumer adoption is outside this library
+validation. AY's existing provenance/licence qualification in the README remains.
+[External comparisons](external-comparisons.md) distinguish
+executed routine specimens from inspection, historical documentation and
+unvalidated complete applications.
