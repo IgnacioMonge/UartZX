@@ -9,6 +9,11 @@ from its first release.
 
 ### Added
 
+- Consumer dependency guide: pinned Git submodules, recursive clones, direct
+  source includes, Dependabot update proposals, application CI, license
+  packaging and rollback. The README recommends this approach for maintained
+  applications; adoption remains a consumer decision.
+
 - Standalone Next diagnostic NEX and a dependency-free host collector for
   unattended, run-matched TCP telemetry: RX loss/backpressure and verified TX
   patterns at 115200 and near 2 Mbaud, board-gated flow selection, bounded waits,

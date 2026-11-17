@@ -4,6 +4,10 @@ UartZX owns register access, bounded TX, fail-stop and RX error capture.
 The application owns scheduling, buffers, framing, recovery and disconnect
 effects. Selecting smaller includes does not change that boundary.
 
+For repository setup and automated update proposals, use the
+[pinned dependency guide](dependency-integration.md). The application owns
+adoption and validation of each new UartZX revision.
+
 ## Measured scope — 2026-11-17
 
 These UartZX measurements started from `014d21d` and used the following

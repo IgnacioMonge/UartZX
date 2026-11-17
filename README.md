@@ -116,7 +116,10 @@ the rest, so the programs can share one driver instead of five.
 
 ## How to use it
 
-Copy `src/` into your project, or add this repository as a submodule.
+For a maintained application, use a Git submodule pinned to a reviewed commit.
+The [consumer dependency guide](docs/dependency-integration.md) covers setup,
+reproducible clones, automatic update proposals, CI and rollback. Copying `src/`
+is also supported, with synchronization owned by the application.
 Include one backend per build, plus `send.inc` if you want both send helpers.
 Code and state are separate files so you decide where the variables live.
 The existing full includes retain their entry points and ABI. For z88dk,
