@@ -23,7 +23,7 @@ def record(event, rate=0, flow=0, step=1, count=0, total=0, bad=0, result=0, rx_
 
 
 class ProbeHost(unittest.TestCase):
-    def run_server(self, handler, timeout=1, soak=False, batch_cases=None, reconnect=False):
+    def run_server(self, handler, timeout=1, soak=False, batch_cases=None, reconnect=False, verify_shutdown=False):
         if (soak or batch_cases is not None) and timeout == 1:
             timeout = 3
         errors = []
@@ -47,7 +47,7 @@ class ProbeHost(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 output = Path(tmp)
-                run = {"protocol": "UXP1", "token": TOKEN}
+                run = {"protocol": "UXP1", "token": TOKEN, "verify_shutdown": verify_shutdown}
                 if soak:
                     run.update(mode="soak", frames_per_rate=10)
                 if batch_cases is not None:
@@ -80,7 +80,7 @@ class ProbeHost(unittest.TestCase):
                 probe.parse_record(broken, token)
 
     def test_full_matrix_fragmented_records_and_payloads(self):
-        def handler(connection):
+        def handler(connection, listener):
             connection.sendall(record(0))
             for rate in (0, 2):
                 for flow in (0, 1):
@@ -107,10 +107,12 @@ class ProbeHost(unittest.TestCase):
                         + record(4, rate, flow, count=len(tx), total=sum(tx) & 0xFFFF)
                     )
             connection.sendall(record(6))
+            listener.close()
 
-        summary, logs = self.run_server(handler)
-        self.assertTrue(summary["ok"])
+        summary, logs = self.run_server(handler, timeout=8, reconnect=True, verify_shutdown=True)
+        self.assertTrue(summary["ok"], summary.get("error"))
         self.assertTrue(summary["complete"])
+        self.assertTrue(summary["shutdown_verified"])
         self.assertEqual(len(summary["results"]), 8)
         self.assertEqual(sum(item["status"] == "observed_without_flow" for item in summary["results"]), 2)
         self.assertEqual(sum(item["event"] == "host_received_tx" for item in logs), 4)
@@ -135,10 +137,12 @@ class ProbeHost(unittest.TestCase):
                 )
             connection.sendall(record(6))
 
-        summary, _ = self.run_server(handler)
+        summary, logs = self.run_server(handler)
         self.assertFalse(summary["ok"])
         self.assertFalse(summary["complete"])
         self.assertEqual(sum(item["status"] == "fail" for item in summary["results"]), 2)
+        captures = [bytes.fromhex(item["payload_hex"]) for item in logs if "payload_hex" in item]
+        self.assertEqual(captures, [b"x" + probe.pattern(2048)[1:]] * 2)
 
     def test_quick_rejects_wrong_payload_sizes_before_transferring(self):
         for event, direction, size in ((1, "rx", 4096), (3, "tx", 2048)):
@@ -165,6 +169,19 @@ class ProbeHost(unittest.TestCase):
                 self.assertFalse(summary["ok"])
                 self.assertIn("error", summary)
                 self.assertEqual(logs[-1]["event"], "host_summary")
+
+    def test_shutdown_rejects_open_connection_or_listener(self):
+        connection, peer = socket.socketpair()
+        with connection, peer:
+            with self.assertRaisesRegex(TimeoutError, "connection stayed open"):
+                probe.verify_shutdown(connection, "127.0.0.1", 0, time.monotonic() + 0.05)
+
+            peer.shutdown(socket.SHUT_WR)
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen()
+                with self.assertRaisesRegex(ValueError, "listener still open"):
+                    probe.verify_shutdown(connection, "127.0.0.1", listener.getsockname()[1], time.monotonic() + 1)
 
     def test_read_timeout_is_bounded(self):
         started = time.monotonic()
@@ -200,6 +217,7 @@ class ProbeHost(unittest.TestCase):
                 with patch.object(probe.subprocess, "run", side_effect=assemble):
                     self.assertEqual(probe.build(output, soak), output.resolve())
                 run = json.loads((output / "run.json").read_text())
+                self.assertTrue(run["verify_shutdown"])
                 self.assertEqual(run.get("mode", "quick"), "soak" if soak else "quick")
                 self.assertEqual(run.get("frames_per_rate"), probe.SOAK_FRAMES if soak else None)
 
@@ -225,15 +243,17 @@ class ProbeHost(unittest.TestCase):
             connection.sendall(record(11, rate, 1, step + chunks - 1, count=chunks, elapsed=duration, reserved=target))
 
     def test_soak_duplex_counts_crcs_duration_and_progress(self):
-        def handler(connection):
+        def handler(connection, listener):
             connection.sendall(record(0))
             self.soak_phase(connection, 0, 1, overlap=(0, 17), chunks=2)
             self.soak_phase(connection, 2, 3, duration=12, target=12)
             connection.sendall(record(6))
+            listener.close()
 
-        summary, logs = self.run_server(handler, soak=True)
-        self.assertTrue(summary["ok"])
+        summary, logs = self.run_server(handler, timeout=8, soak=True, reconnect=True, verify_shutdown=True)
+        self.assertTrue(summary["ok"], summary.get("error"))
         self.assertTrue(summary["complete"])
+        self.assertTrue(summary["shutdown_verified"])
         self.assertEqual(summary["totals"], {"chunks": 3, "rx_bytes": 24576, "tx_bytes": 6144, "overlap_count": 49})
         self.assertEqual([item["target_frames"] for item in summary["per_rate"]], [10, 12])
         self.assertEqual([item["chunks"] for item in summary["per_rate"]], [2, 1])
@@ -467,11 +487,13 @@ class ProbeHost(unittest.TestCase):
                     connection.sendall(record(5, case["rate"], 0 if case["kind"] in (5, 6) else 1, step))
                     connection, step = self.batch_case(connection, case, step, listener=listener)
                 connection.sendall(record(6, step=step))
+                listener.close()
             finally:
                 connection.close()
 
         with patch.object(probe, "inhibit_sleep") as sleep:
-            summary, logs = self.run_server(handler, timeout=4, batch_cases=cases, reconnect=True)
+            summary, logs = self.run_server(handler, timeout=8, batch_cases=cases, reconnect=True, verify_shutdown=True)
+        self.assertTrue(summary["shutdown_verified"], summary.get("error"))
         self.assertEqual(sleep.call_args_list, [unittest.mock.call(True), unittest.mock.call(False)])
         self.assertTrue(summary["ok"], summary.get("error"))
         self.assertTrue(summary["complete"])

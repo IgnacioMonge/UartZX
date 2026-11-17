@@ -69,6 +69,22 @@ def receive_exact(connection, count, deadline):
     return bytes(data)
 
 
+def verify_shutdown(connection, address, port, deadline):
+    deadline = min(deadline, time.monotonic() + 12)
+    connection.settimeout(remaining(deadline))
+    try:
+        if connection.recv(1):
+            raise ValueError("unexpected data after DONE")
+    except TimeoutError as error:
+        raise TimeoutError("diagnostic connection stayed open after DONE") from error
+
+    try:
+        with socket.create_connection((address, port), timeout=remaining(deadline)):
+            raise ValueError("diagnostic listener still open after DONE")
+    except ConnectionRefusedError:
+        return True
+
+
 def exchange_duplex(connection, payload, count, baud, deadline, paced=True):
     stopped = threading.Event()
     errors = []
@@ -187,7 +203,7 @@ def build(output, soak=False, batch=False):
     for name in ("UXPROBE.NEX", "probe.bin", "probe.sym"):
         if not (output / name).is_file():
             raise ValueError(f"assembler did not produce {name}")
-    run = {"protocol": "UXP1", "token": token}
+    run = {"protocol": "UXP1", "token": token, "verify_shutdown": True}
     if soak:
         run.update(mode="soak", frames_per_rate=SOAK_FRAMES)
     if batch:
@@ -202,6 +218,8 @@ def collect(address, output, timeout, port=6145):
     token = run["token"]
     if run.get("protocol") != "UXP1" or type(token) is not int or not 0 <= token <= 0xFFFFFFFF:
         raise ValueError("invalid run.json protocol or token")
+    if type(run.get("verify_shutdown", False)) is not bool:
+        raise ValueError("invalid run.json verify_shutdown flag")
     if run.get("mode") == "batch":
         return collect_batch(address, output, timeout, port, run)
     soak = run.get("mode", "quick") == "soak"
@@ -314,6 +332,8 @@ def collect(address, output, timeout, port=6145):
                 elif soak and event == "done":
                     if pending or active_phase is not None or record["result"] != 0 or finished_rows != {(0, 1), (2, 1)}:
                         raise ValueError("done before all soak phases completed")
+                    if run.get("verify_shutdown"):
+                        summary["shutdown_verified"] = verify_shutdown(connection, address, port, deadline)
                     summary["complete"] = not summary["skipped"]
                     summary["ok"] = (summary["complete"] and bool(summary["results"]) and
                                      all(item["status"] == "pass" for item in summary["results"]) and
@@ -341,8 +361,11 @@ def collect(address, output, timeout, port=6145):
                         record["host_payload_ok"] = actual == payload
                         record["host_crc32"] = f"{zlib.crc32(actual):08x}"
                         record["expected_crc32"] = f"{zlib.crc32(payload):08x}"
-                        emit({"event": "host_received_tx", "count": len(actual), "ok": actual == payload,
-                              "crc32": record["host_crc32"], "expected_crc32": record["expected_crc32"]})
+                        evidence = {"event": "host_received_tx", "count": len(actual), "ok": record["host_payload_ok"],
+                                    "crc32": record["host_crc32"], "expected_crc32": record["expected_crc32"]}
+                        if not record["host_payload_ok"]:
+                            evidence["payload_hex"] = actual.hex()
+                        emit(evidence)
                 elif event in ("result_rx", "result_tx"):
                     direction = event[-2:]
                     ready = pending.pop(direction, None)
@@ -381,6 +404,8 @@ def collect(address, output, timeout, port=6145):
                         events = {item["event"] for item in summary["results"] if (item["rate_index"], item["flow"]) == (rate, flow)}
                         if events != {"result_rx", "result_tx"}:
                             raise ValueError(f"missing RX/TX results for rate={rate}, flow={flow}")
+                    if run.get("verify_shutdown"):
+                        summary["shutdown_verified"] = verify_shutdown(connection, address, port, deadline)
                     summary["complete"] = not bool(required & skipped)
                     summary["ok"] = not any(item["status"] == "fail" for item in summary["results"]) and all(item["result"] == 0 for item in summary["configs"])
                     break
@@ -497,6 +522,8 @@ def collect_batch(address, output, timeout, port, run):
                 if event == "done":
                     if active or pending or len(summary["cases"]) != len(cases) or record["result"] or record["step"] != last_step:
                         raise ValueError("done before all batch cases completed")
+                    if run.get("verify_shutdown"):
+                        summary["shutdown_verified"] = verify_shutdown(connection, address, port, deadline)
                     summary["complete"] = True
                     summary["ok"] = all(item["status"] == "pass" for item in summary["cases"])
                     break

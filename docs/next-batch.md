@@ -23,6 +23,8 @@ from that same plan for the NEX. Each case must report its actual CPU/video-mode
 readback, results and completion. Every planned case and final DONE are required
 before the collector accepts a complete result. Missing cases, unexpected
 disconnects and corrupted reports remain failures, even if earlier cases passed.
+The collector also checks for EOF and a refused new connection after DONE
+when the build manifest enables shutdown verification.
 Recoverable failed cases remain failed in the report while bounded UART recovery
 allows the remaining cases to run. An incomplete announced TX payload still
 aborts: further telemetry cannot safely delimit the missing payload bytes.

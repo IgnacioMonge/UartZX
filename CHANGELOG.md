@@ -176,8 +176,10 @@ from its first release.
 ### Fixed
 
 - The quick Next probe rejects RX/TX lengths that differ from its fixed
-  workload. All probe modes require the ESP to stop listening before
-  reporting successful completion.
+  workload and records the received bytes on a TX mismatch. All probe
+  modes send DONE before shutting down the ESP server, since some firmware
+  closes the active connection during shutdown. The collector requires both
+  end of stream and a refused connection to the diagnostic port.
 - An incomplete AY flush now latches `UART_RX_RECOVERY` (`0x80`), clears its
   second-byte cache and blocks normal RX until a later flush completes or
   initialization clears it; clean over-budget streams and stuck-low lines

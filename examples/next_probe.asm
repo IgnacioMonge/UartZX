@@ -183,23 +183,20 @@ probe_complete:
     call probe_recover
     jp c, probe_abort
     call probe_metrics_reset
-    ld hl, probe_server_off      ; stop listening while keeping the telemetry connection
-    call probe_command
-    jr c, probe_server_stop_failed
     ld a, 6
     call probe_emit
-    jp nc, probe_restore        ; the collector closes its socket after DONE
-    jr probe_final_report_failed
-probe_server_stop_failed:
-    ld a, 6                     ; fatal result: server shutdown failed
-    ld (probe_result), a
-    ld a, 7
-    call probe_emit
-probe_final_report_failed:
-    ld hl, probe_close
+    push af
+    ld hl, probe_server_off      ; some ESP firmware closes the client here too
+    call probe_command
+    jr nc, probe_close_client
+    pop af
+    scf
+    push af
+probe_close_client:
+    ld hl, probe_close          ; also close the client when the server leaves it open
     call probe_command
     call probe_restore
-    scf
+    pop af
     ret
 probe_abort:
     IFDEF PROBE_BATTERY

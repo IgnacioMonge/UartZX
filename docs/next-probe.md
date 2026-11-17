@@ -34,17 +34,19 @@ The probe finds an inherited UART rate from the library's baud tables, uses
 volatile `AT+UART_CUR`, selects active RX with `AT+CIPRECVMODE=0` and disables
 extended IPD headers before opening a temporary diagnostic server. It does not
 change credentials, write ESP flash, reset the ESP or write the Next's SD card.
-At completion, the probe requires the ESP to acknowledge `AT+CIPSERVER=0`
-before sending DONE. This stops listening and keeps the existing TCP connection
-open for the final report on ESP-AT firmware with the documented behavior.
-The collector then closes its socket. The probe restores the previous CPU
-speed and leaves the UART at 115200 with flow disabled.
-[Espressif's ESP8266 TCP/IP command reference](https://docs.espressif.com/projects/esp-at/en/release-v2.2.0.0_esp8266/AT_Command_Set/TCP-IP_AT_Commands.html#at-cipserver-delete-create-a-tcp-ssl-server)
+The probe sends DONE before `AT+CIPSERVER=0` because the ESP may close the
+active connection when it stops listening. It also issues `AT+CIPCLOSE=0`
+for firmware that leaves the client connected, then restores the previous
+CPU speed and leaves the UART at 115200 with flow disabled.
+For new builds, the collector requires EOF on the original socket and a
+refused new connection to port 6145 within a single budget of up to 12 seconds.
+Success records `shutdown_verified: true` in `summary.json`. Older build
+manifests retain their original completion rules.
 
-Green border indicates that the probe sent DONE. Check the host log for the
-individual results. Red indicates failure. If the ESP rejects server shutdown,
-the probe attempts to send FATAL with result 6 and close the client connection.
-An abort may require restarting the Next before returning to another application.
+A green border indicates successful report emission and ESP server-stop
+acknowledgment. Check the host log for the port check and individual results.
+Red indicates failure. An abort may require restarting the Next before
+returning to another application.
 
 ## Measurements and limits
 
@@ -58,7 +60,8 @@ is recorded as an observation. A flow-enabled RX pass requires all bytes in
 order, the expected sum, no mismatch and no UART RX error. TX sends a 2048-byte
 pattern; the host compares every byte and records CRC32. A pass also requires
 the device's count and sum to match. Busy polls, frame duration, raw board/core/
-video values and the frame register are recorded.
+video values and the frame register are recorded. On a TX mismatch the
+collector also records the received payload as hex in `telemetry.jsonl`.
 
 Each 32-byte `UXP1` report carries its build's random token and a phase number;
 READY must announce exactly 4096 RX bytes or 2048 TX bytes, and the paired
@@ -146,6 +149,20 @@ This confirms RX backpressure on this board with these settings. It does not
 force the ESP to stall Next TX, prove sustained duplex operation or migrate a
 consumer. The first run inherited passive RX and was invalid for RX assessment;
 the probe now explicitly selects active RX, covered by the CPU regression.
+
+### Shutdown verification: 2026-11-17
+
+The first shutdown-check run (token `2336359729`) lost its TCP connection
+before DONE and returned a wrong TX CRC at 2 Mbaud with flow off. Only the
+CRC was retained. The revised probe (token `3872607984`, NEX SHA256
+`6efb06a40f4c35fdbe8e08a700b35a741e33b6939c8b83bcdb5bfaa919845a74`)
+completed all four rows with `ok=true`, `complete=true` and
+`shutdown_verified=true`. The collector received DONE at 115200 with flow off,
+observed EOF and confirmed port 6145 refused the verification connection.
+All four TX payloads matched, including the previously failing row. This
+run confirms shutdown on the tested ESP firmware. The earlier TX mismatch
+did not recur, so its cause remains undetermined. Raw evidence is retained
+locally in `work/next-probe-shutdown-20261117-201827`.
 
 ## Observed sustained duplex run: 2026-11-17
 

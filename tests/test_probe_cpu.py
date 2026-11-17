@@ -33,6 +33,8 @@ class Esp(NextUart):
         self.passive = True       # inherited BridgeZX state must be normalized
         self.ipd_info = True
         self.server_stop_reply = b"\r\nOK\r\n"
+        self.server_stop_closes_client = False
+        self.client_closed = False
 
     def inp(self, port):
         # A controlled producer is only a protocol fixture for flow-enabled RX.
@@ -75,6 +77,9 @@ class Esp(NextUart):
         command = bytes(self.command)
         self.command.clear()
         if command.startswith(b"AT+CIPSEND=0,"):
+            if self.client_closed:
+                self.reply(b"\r\nERROR\r\n")
+                return
             self.length = int(command.split(b",")[1])
             self.payload = bytearray()
             self.reply(b"\r\n> ")
@@ -84,7 +89,12 @@ class Esp(NextUart):
             if command == b"AT+CIPDINFO=0\r\n":
                 self.ipd_info = False
             if command == b"AT+CIPSERVER=0\r\n" and self.reports:
+                self.client_closed = self.server_stop_closes_client
                 self.reply(self.server_stop_reply)
+                return
+            if command == b"AT+CIPCLOSE=0\r\n":
+                self.reply(b"\r\nERROR\r\n" if self.client_closed else b"\r\nOK\r\n")
+                self.client_closed = True
                 return
             self.reply(b"\r\nOK\r\n")
             if command == b"AT+CIPSERVER=1,6145\r\n":
@@ -520,7 +530,7 @@ class ProbeCpu(unittest.TestCase):
         self.assertEqual(esp.errors, [])
         self.assertEqual(esp.reports[0][4], 0)
         self.assertEqual(esp.reports[-1][4], 6)
-        self.assertLess(esp.sent.rindex(b"AT+CIPSERVER=0\r\n"), esp.sent.rindex(esp.reports[-1]))
+        self.assertLess(esp.sent.rindex(esp.reports[-1]), esp.sent.rindex(b"AT+CIPSERVER=0\r\n"))
         ready = {}
         rows = set()
         for report in esp.reports:
@@ -549,13 +559,20 @@ class ProbeCpu(unittest.TestCase):
         self.assertFalse(any(value & 0x20 for value in esp.frame))
         self.assertEqual(len(esp.tx_payloads), 2)
 
-    def test_rejected_server_shutdown_reports_fatal_and_closes_client(self):
+    def test_done_survives_firmware_that_closes_client_when_stopping_listener(self):
+        driver, esp = self.driver(board=0)
+        esp.server_stop_closes_client = True
+        driver.call("probe_run")
+        self.assertFalse(driver.carry)
+        self.assertTrue(esp.client_closed)
+        self.assertEqual(esp.reports[-1][4], 6)
+
+    def test_rejected_server_shutdown_sets_carry_and_closes_client(self):
         driver, esp = self.driver(board=0)
         esp.server_stop_reply = b"\r\nERROR\r\n"
         driver.call("probe_run")
         self.assertTrue(driver.carry)
-        self.assertEqual((esp.reports[-1][4], esp.reports[-1][7]), (7, 6))
-        self.assertFalse(any(report[4] == 6 for report in esp.reports))
+        self.assertEqual(esp.reports[-1][4], 6)
         self.assertTrue(esp.sent.endswith(b"AT+CIPCLOSE=0\r\n"))
 
     def test_expired_read_rejects_continuously_available_input(self):
