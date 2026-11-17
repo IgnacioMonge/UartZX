@@ -51,38 +51,45 @@ For GitHub Actions, initialize the pinned source in each job that needs it:
     submodules: true
 ```
 
-## Propose updates automatically
+## Check upstream before compiling
 
-Add `.github/dependabot.yml` to the consumer's default branch:
+Use native Git to query upstream explicitly after initializing the submodule:
 
-```yaml
-version: 2
-updates:
-  - package-ecosystem: "gitsubmodule"
-    directory: "/"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 1
+```sh
+git -C vendor/UartZX fetch origin main
+git -C vendor/UartZX log --oneline HEAD..FETCH_HEAD
 ```
 
-Dependabot checks upstream and opens a PR changing the recorded commit.
-Each consumer owns this configuration and its acceptance checks; UartZX cannot
-change downstream pins. Enable GitHub Actions for that repository. See GitHub's
-[supported ecosystems](https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories)
-and [configuration reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference).
+The first command downloads Git metadata/objects. The second lists upstream
+commits absent from the checked-out revision; an empty list means no new
+commits. Neither command changes the submodule HEAD, working files or the
+consumer's recorded pin. A failed fetch must stop the query.
 
-Run the consumer's tests on PRs affecting the submodule path or `.gitmodules`.
-A path filter for the example above includes `vendor/UartZX` (the Git entry,
-without a trailing slash), not just files below it. Check the consumer's actual
-adapter, caller ABI, error/recovery behavior, linked code/BSS/stack and overlays
-for every target it uses. UartZX's own tests do not replace application tests.
-Keep hardware evidence explicit when behavior or timing changes. Do not
-auto-merge or rewrite size/ABI baselines to conceal a failing update.
+A consumer using Make can add this target (recipe lines start with a tab):
 
-Review the upstream diff, test results and consumer changelog before accepting
-the PR. After acceptance, ordinary clones/builds use that new exact revision.
-For a manual proposal, fetch in the submodule, check out the reviewed commit
-with `--detach`, then stage its path in the consumer.
+```make
+.PHONY: uartzx-updates
+uartzx-updates:
+	git -C vendor/UartZX fetch origin main
+	git -C vendor/UartZX log --oneline HEAD..FETCH_HEAD
+```
+
+Run `make uartzx-updates` before the application's normal build when you want
+to check for changes. Keep it separate from normal build dependencies so
+compiling remains reproducible and works offline. This uses installed Git;
+it requires no update bot, scheduled CI or additional service.
+
+To adopt an update, review the listed commits and diff, then check out the
+chosen commit with `git checkout --detach` inside the submodule. Run the
+consumer's applicable tests and update its changelog before staging the
+submodule path and committing the new pin. After acceptance, ordinary clones
+and builds use that exact revision.
+
+Check the consumer's actual adapter, caller ABI, error/recovery behavior,
+linked code/BSS/stack and overlays for the targets it uses. UartZX's own tests
+do not replace application checks. Keep hardware evidence explicit when
+behavior or timing changes; do not rewrite size/ABI baselines to conceal a
+failing update. Each consumer owns adoption; UartZX cannot change its pin.
 
 ## License and rollback
 

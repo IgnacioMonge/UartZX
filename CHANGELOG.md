@@ -10,7 +10,7 @@ from its first release.
 ### Added
 
 - Consumer dependency guide: pinned Git submodules, recursive clones, direct
-  source includes, Dependabot update proposals, application CI, license
+  source includes, an explicit Git update-check target, application CI, license
   packaging and rollback. The README recommends this approach for maintained
   applications; adoption remains a consumer decision.
 
