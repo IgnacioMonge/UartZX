@@ -34,11 +34,17 @@ The probe finds an inherited UART rate from the library's baud tables, uses
 volatile `AT+UART_CUR`, selects active RX with `AT+CIPRECVMODE=0` and disables
 extended IPD headers before opening a temporary diagnostic server. It does not
 change credentials, write ESP flash, reset the ESP or write the Next's SD card.
-Completion closes the diagnostic connection and server, restores the previous
-CPU speed and leaves the UART at 115200 with flow disabled. Green border means
-the program completed, not that every measured condition passed. Red means the
-probe aborted; inspect the host log. An abort may require restarting the Next
-before returning to another application.
+At completion, the probe requires the ESP to acknowledge `AT+CIPSERVER=0`
+before sending DONE. This stops listening and keeps the existing TCP connection
+open for the final report on ESP-AT firmware with the documented behavior.
+The collector then closes its socket. The probe restores the previous CPU
+speed and leaves the UART at 115200 with flow disabled.
+[Espressif's ESP8266 TCP/IP command reference](https://docs.espressif.com/projects/esp-at/en/release-v2.2.0.0_esp8266/AT_Command_Set/TCP-IP_AT_Commands.html#at-cipserver-delete-create-a-tcp-ssl-server)
+
+Green border indicates that the probe sent DONE. Check the host log for the
+individual results. Red indicates failure. If the ESP rejects server shutdown,
+the probe attempts to send FATAL with result 6 and close the client connection.
+An abort may require restarting the Next before returning to another application.
 
 ## Measurements and limits
 
@@ -55,7 +61,8 @@ the device's count and sum to match. Busy polls, frame duration, raw board/core/
 video values and the frame register are recorded.
 
 Each 32-byte `UXP1` report carries its build's random token and a phase number;
-READY and result must match. The stream has an overall host deadline and each
+READY must announce exactly 4096 RX bytes or 2048 TX bytes, and the paired
+result must match its phase. The stream has an overall host deadline and each
 UART phase has a 150-frame deadline. The token rejects stale images; it is not
 authentication. This is a local diagnostic server, with no command shell or
 general-purpose control API.

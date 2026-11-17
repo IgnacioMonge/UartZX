@@ -32,6 +32,7 @@ class Esp(NextUart):
         self.controlled = deque()
         self.passive = True       # inherited BridgeZX state must be normalized
         self.ipd_info = True
+        self.server_stop_reply = b"\r\nOK\r\n"
 
     def inp(self, port):
         # A controlled producer is only a protocol fixture for flow-enabled RX.
@@ -82,6 +83,9 @@ class Esp(NextUart):
                 self.passive = False
             if command == b"AT+CIPDINFO=0\r\n":
                 self.ipd_info = False
+            if command == b"AT+CIPSERVER=0\r\n" and self.reports:
+                self.reply(self.server_stop_reply)
+                return
             self.reply(b"\r\nOK\r\n")
             if command == b"AT+CIPSERVER=1,6145\r\n":
                 self.feed(b"0,CONNECT\r\n")
@@ -516,6 +520,7 @@ class ProbeCpu(unittest.TestCase):
         self.assertEqual(esp.errors, [])
         self.assertEqual(esp.reports[0][4], 0)
         self.assertEqual(esp.reports[-1][4], 6)
+        self.assertLess(esp.sent.rindex(b"AT+CIPSERVER=0\r\n"), esp.sent.rindex(esp.reports[-1]))
         ready = {}
         rows = set()
         for report in esp.reports:
@@ -543,6 +548,15 @@ class ProbeCpu(unittest.TestCase):
         self.assertEqual([r[5] for r in esp.reports if r[4] == 8], [0, 2])
         self.assertFalse(any(value & 0x20 for value in esp.frame))
         self.assertEqual(len(esp.tx_payloads), 2)
+
+    def test_rejected_server_shutdown_reports_fatal_and_closes_client(self):
+        driver, esp = self.driver(board=0)
+        esp.server_stop_reply = b"\r\nERROR\r\n"
+        driver.call("probe_run")
+        self.assertTrue(driver.carry)
+        self.assertEqual((esp.reports[-1][4], esp.reports[-1][7]), (7, 6))
+        self.assertFalse(any(report[4] == 6 for report in esp.reports))
+        self.assertTrue(esp.sent.endswith(b"AT+CIPCLOSE=0\r\n"))
 
     def test_expired_read_rejects_continuously_available_input(self):
         driver, esp = self.driver()

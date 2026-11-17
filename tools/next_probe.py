@@ -327,7 +327,10 @@ def collect(address, output, timeout, port=6145):
                     direction = event[-2:]
                     if direction in pending:
                         raise ValueError(f"duplicate ready_{direction}")
-                    payload = pattern(record["count"])
+                    count = 4096 if direction == "rx" else 2048
+                    if record["count"] != count:
+                        raise ValueError(f"invalid ready_{direction} size: expected {count}, got {record['count']}")
+                    payload = pattern(count)
                     pending[direction] = record
                     if direction == "rx":
                         connection.settimeout(remaining(deadline))

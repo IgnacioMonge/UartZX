@@ -84,19 +84,28 @@ class ProbeHost(unittest.TestCase):
             connection.sendall(record(0))
             for rate in (0, 2):
                 for flow in (0, 1):
-                    payload = probe.pattern(511)
-                    total = sum(payload) & 0xFFFF
+                    rx = probe.pattern(4096)
+                    tx = probe.pattern(2048)
                     connection.sendall(record(5, rate, flow))
-                    ready = record(1, rate, flow, count=len(payload))
+                    ready = record(1, rate, flow, count=len(rx))
                     connection.sendall(ready[:7])
                     connection.sendall(ready[7:])
-                    received = probe.receive_exact(connection, len(payload), time.monotonic() + 1)
-                    self.assertEqual(received, payload)
+                    received = probe.receive_exact(
+                        connection, len(rx), time.monotonic() + 1
+                    )
+                    self.assertEqual(received, rx)
                     # Deliberate overflow without flow is an observation, not a pass.
-                    result_rx = record(2, rate, flow, count=len(payload), total=total) if flow else record(2, rate, flow, count=63, result=3, rx_error=4)
-                    connection.sendall(result_rx + record(3, rate, flow, count=len(payload)))
-                    connection.sendall(payload[:11])
-                    connection.sendall(payload[11:] + record(4, rate, flow, count=len(payload), total=total))
+                    result_rx = (
+                        record(2, rate, flow, count=len(rx), total=sum(rx) & 0xFFFF)
+                        if flow
+                        else record(2, rate, flow, count=63, result=3, rx_error=4)
+                    )
+                    connection.sendall(result_rx + record(3, rate, flow, count=len(tx)))
+                    connection.sendall(tx[:11])
+                    connection.sendall(
+                        tx[11:]
+                        + record(4, rate, flow, count=len(tx), total=sum(tx) & 0xFFFF)
+                    )
             connection.sendall(record(6))
 
         summary, logs = self.run_server(handler)
@@ -111,18 +120,43 @@ class ProbeHost(unittest.TestCase):
         def handler(connection):
             for rate in (0, 2):
                 connection.sendall(record(8, rate, 1, result=4))
-                payload = probe.pattern(16)
-                total = sum(payload)
-                connection.sendall(record(5, rate) + record(1, rate, count=16))
-                probe.receive_exact(connection, 16, time.monotonic() + 1)
-                connection.sendall(record(2, rate, count=16, total=total) + record(3, rate, count=16))
-                connection.sendall(b"x" + payload[1:] + record(4, rate, count=16, total=total))
+                rx = probe.pattern(4096)
+                tx = probe.pattern(2048)
+                connection.sendall(record(5, rate) + record(1, rate, count=len(rx)))
+                probe.receive_exact(connection, len(rx), time.monotonic() + 1)
+                connection.sendall(
+                    record(2, rate, count=len(rx), total=sum(rx) & 0xFFFF)
+                    + record(3, rate, count=len(tx))
+                )
+                connection.sendall(
+                    b"x"
+                    + tx[1:]
+                    + record(4, rate, count=len(tx), total=sum(tx) & 0xFFFF)
+                )
             connection.sendall(record(6))
 
         summary, _ = self.run_server(handler)
         self.assertFalse(summary["ok"])
         self.assertFalse(summary["complete"])
         self.assertEqual(sum(item["status"] == "fail" for item in summary["results"]), 2)
+
+    def test_quick_rejects_wrong_payload_sizes_before_transferring(self):
+        for event, direction, size in ((1, "rx", 4096), (3, "tx", 2048)):
+            for count in (0, size - 1, size + 1):
+                with self.subTest(direction=direction, count=count):
+                    summary, logs = self.run_server(
+                        lambda connection: connection.sendall(
+                            record(event, count=count)
+                        )
+                    )
+                    self.assertFalse(summary["ok"])
+                    self.assertIn(f"invalid ready_{direction} size", summary["error"])
+                    self.assertFalse(
+                        any(
+                            log["event"] in ("host_sent_rx", "host_received_tx")
+                            for log in logs
+                        )
+                    )
 
     def test_truncated_wrong_magic_token_and_missing_done(self):
         for data in (record(0)[:5], b"oops" + record(0)[4:], record(0)[:-4] + b"xxxx", record(0)):

@@ -175,6 +175,9 @@ from its first release.
 
 ### Fixed
 
+- The quick Next probe rejects RX/TX lengths that differ from its fixed
+  workload. All probe modes require the ESP to stop listening before
+  reporting successful completion.
 - An incomplete AY flush now latches `UART_RX_RECOVERY` (`0x80`), clears its
   second-byte cache and blocks normal RX until a later flush completes or
   initialization clears it; clean over-budget streams and stuck-low lines
