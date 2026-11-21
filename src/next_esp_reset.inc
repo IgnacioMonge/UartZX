@@ -8,6 +8,6 @@ uart_esp_reset:
 uart_esp_reset_hold:
     halt
     djnz uart_esp_reset_hold
-    jp uart_esp_reset_release
+; Falls into uart_esp_reset_release, the first instruction of next_reset.inc.
 
     include "next_reset.inc"

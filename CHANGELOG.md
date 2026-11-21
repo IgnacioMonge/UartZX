@@ -37,12 +37,12 @@ from its first release.
   selections, both frame modes, injected recovery checks and over two hours of
   symmetric endurance with 169443328 B of verified payload.
 - Ready-to-include Next duplex flow selection, with 115200/2 Mbaud support,
-  immediate TX, bounded recovery and wire-idle query: 367 code/read-only bytes
+  immediate TX, bounded recovery and wire-idle query: 355 code/read-only bytes
   and two separately allocated state bytes. Both assemblers and a separate-object
   link verify the selection; individual leaves remain available.
 - Optional Next `next_flow.inc`: `uart_flow_enable` / `uart_flow_disable`
   change only the ESP UART's hardware-flow bit and restore the previous
-  ESP/Pi selection without rewriting divisors. The 33-byte leaf preserves
+  ESP/Pi selection without rewriting divisors. The 32-byte leaf preserves
   interrupt state, adds no writable state, and keeps board/ESP negotiation
   in the caller. Tests cover frame/selection isolation, live traffic and
   error preservation, interrupts, both assemblers and independent linking.
@@ -55,14 +55,14 @@ from its first release.
 - Optional Next `uart_flush_budget` with a caller-owned total sample budget,
   independent of the quiet window, and `uart_try_write` with one status sample
   and retryable busy distinct from the existing TX failure latch. Both retain
-  RX error capture and interrupt state, cost 52/29 code bytes, add no state,
+  RX error capture and interrupt state, cost 49/28 code bytes, add no state,
   and leave the core and compatible full Next include unchanged.
 - Portable one-step RX example for all three backends, assembled and executed
   in tests; integration contracts cover AY cache-only readiness, interrupt
   behavior and the divMMC flush's fixed-poll guarantee.
 - Selectable `<backend>_core.inc` and optional ready, flush and block-read
   includes, plus independent string/block send helpers and AY mixer-preserving
-  initialization. Compatible duplex cores emit 82/192/403 code bytes and 1/2/3 state
+  initialization. Compatible duplex cores emit 78/185/326 code bytes and 1/2/3 state
   bytes for divMMC/Next/AY; omitted helpers emit no code or state. Bounded TX,
   fail-stop, RX error capture and Next's initial 115200 configuration remain
   mandatory. README tables and separate-object link tests record the costs.
@@ -71,11 +71,16 @@ from its first release.
   them. The ESP reset also resets the expansion bus.
 - Fast divMMC L-input entry preserving E/HL for Classic's real inline callers,
   with an optional A-input preserving adapter and one shared TX algorithm.
-  The complete Classic specimen is 90 B and 150 T-states with TX ready,
+  The complete Classic specimen is 89 B and 147 T-states with TX ready,
   reuses its shared state byte and adds no TX stack use; it keeps ten frame
   waits and 512 bounded startup reads. Both assemblers and separate-object
   links verify the selections; instruction-level UART model tests cover
   registers, flags, stack, failure paths and one-shot disconnect effects.
+- `src/divmmc_fast_open.inc`: the fast divMMC core without its final jump,
+  for a failure destination assembled right after it: 66 B with the default
+  latch instead of 69. `divmmc_fast.inc` is the same code ending in the jump;
+  a test keeps the two alike, and the compatible core is built on the open
+  one.
 - Assembly-time divMMC first-time TX failure destination, with a default
   state-1 latch. One shared-state check rejects later sends in states 1/2
   without I/O or repeated effects; Classic can jump directly to its existing
@@ -116,7 +121,11 @@ from its first release.
   no longer hold `uart_read` with interrupts off, as it could in the
   application drivers. A byte the ESP starts just as a read gives up, up to
   1.5 bit times after CTS rises, is received; the NetManZX driver loses it or
-  reads it from its middle on the next call.
+  reads it from its middle on the next call. The loops that send and sample
+  the bits are shorter code than netman-zx's with every port access on the
+  same T-state, checked by running both under the same line waveforms
+  (`tools/compare_ports.py`) and by a test of one two-byte read; the core is
+  326 bytes and `uart_write` uses 8 bytes of stack.
 - AY stop-bit check: a received byte whose stop bit reads low is dropped
   and latches `UART_RX_FRAMING` in `uart_rx_errors`, and `uart_read` then
   reports nothing until `uart_flush`, as on the Next (`uart_read_raw` opts
@@ -132,6 +141,10 @@ from its first release.
   The counted loops in NetManZX and BitStream sent it at a rate no ESP reads.
 - One source per backend for both sjasmplus and z88dk-z80asm, with code and
   state in separate files.
+- `tools/compare_ports.py`: runs the drivers of a Git revision and of the
+  working tree on the same random calls and device behaviour, and reports
+  any difference in port accesses, results, state or interrupt state; on the
+  AY also in the T-state of each access, for any `UART_BIT_DELAY`.
 - Tests: both assemblers must produce the same bytes for each backend
   (`tests/test_assembly.py`), and the drivers run on the Python `z80`
   emulator: divMMC and Next against UART models built from the HDL
@@ -152,8 +165,9 @@ from its first release.
   BitStream drivers the design was compared against, and the revisions of
   the Next, ZX-Uno and divTIESUS hardware sources the drivers were checked
   against (`docs/sources.md`).
-- Provenance note in the README: the AY bit loops come from netman-zx,
-  which publishes no licence, and no permission from its author is recorded.
+- Provenance note in the README: the AY receive polling loops and all its
+  bit timing come from netman-zx, which publishes no licence, and no
+  permission from its author is recorded.
 - MIT licence.
 - Baseline review comparing the application drivers, checked against the
   Spectrum Next port documentation and the ZX-Uno UART HDL
@@ -166,16 +180,15 @@ from its first release.
   leaves with the same entry points and transport ABI. z88dk full-include
   builds must add the UartZX `src` directory to their include search path.
   No consumer is migrated automatically.
-- Full Next code grows by 10 bytes to share interrupt-state-preserving reset
-  controls (339 code + 2 state bytes); minimal builds omit all reset code.
-  Next read/write instruction costs are unchanged. AY full code is 478 bytes;
-  its core and timed bit loops are unchanged.
+- Full Next code shares interrupt-state-preserving reset controls (322 code
+  + 2 state bytes); minimal builds omit all reset code. AY full code is 399
+  bytes.
 - Compatible divMMC core/full includes retain all public entries and register
   contracts through the optional A adapter. Sharing the L-input algorithm
-  costs 7 additional code bytes, 37 T-states and 2 temporary stack bytes for
-  compatible A-input TX (82/163 B code, 235 T-states, 6 B internal stack).
+  costs 3 additional code bytes, 34 T-states and 2 temporary stack bytes for
+  compatible A-input TX (78/158 B code, 232 T-states, 6 B internal stack).
   Fast Classic omits this adapter and replaces the previous 116 B/256 T
-  integration with 90 B/150 T. The default nonzero failure value is now 1
+  integration with 89 B/147 T. The default nonzero failure value is now 1
   instead of 0x41; existing nonzero states remain unchanged on later sends.
 
 ### Fixed

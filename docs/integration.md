@@ -10,6 +10,13 @@ adoption and validation of each new UartZX revision.
 
 ## Measured scope — 2026-11-17
 
+This section is the record of that day's measurements and is kept as it was.
+A size pass on 2026-11-22 changed the bytes of every selection below without
+changing entry points, contracts or port accesses: the Classic specimen is now
+89 B and 147 T-states, the compatible divMMC core 78 B and 232 T-states. The
+current figures are in the [README](../README.md#optional-costs) and in the
+sections that follow this one.
+
 These UartZX measurements started from `014d21d` and used the following
 consumer snapshots read-only:
 
@@ -103,27 +110,36 @@ replacement: RX service, gap marking and recovery still need integration.
 
 The compatible `<backend>_core.inc`, `<backend>.inc` and `send.inc` retain their
 public entries and register contracts. divMMC has one transmission algorithm,
-in `divmmc_fast.inc`; the compatible core composes it with the default failure
-destination and the optional preserving A adapter. There are no runtime
+kept in two files that a test holds byte for byte alike: `divmmc_fast.inc`
+ends in the jump to the failure destination, `divmmc_fast_open.inc` runs
+into whatever follows it. Neither includes another file, so the fast
+selection still builds without an include path. The compatible core
+composes the open one with the default destination and the optional
+preserving A adapter. There are no runtime
 options, indirect calls or preprocessor feature combinations.
 
 | divMMC file | Supplies | Code |
 |---|---|---:|
-| `divmmc_fast.inc` | `uart_init`, `uart_read`, `uart_read_raw`, `uart_write_fast` (L) | 63 B |
+| `divmmc_fast_open.inc` | `uart_init`, `uart_read`, `uart_read_raw`, `uart_write_fast` (L); a TX timeout runs into the next include | 59 B |
+| `divmmc_fast.inc` | The same, closed with `jp uart_tx_fail` | 62 B |
 | `divmmc_tx_fail.inc` | Default `uart_tx_fail`: latch 1, CF=1 | 7 B |
 | `divmmc_write.inc` | `uart_write` (A), preserves A/BC/DE/HL | 12 B |
-| `divmmc_core.inc` | All three above, same existing API | 82 B |
-| `divmmc.inc` | Compatible core + ready/flush/read-block | 163 B |
+| `divmmc_core.inc` | Open core, default destination and A adapter, same existing API | 78 B |
+| `divmmc.inc` | Compatible core + ready/flush/read-block | 158 B |
 
 Choose `divmmc_fast.inc` plus **one** failure destination: either define
 `uart_tx_fail EQU application_handler`, or include `divmmc_tx_fail.inc`.
+For the default destination, `divmmc_fast_open.inc` with `divmmc_tx_fail.inc`
+as the very next include saves the 3-byte jump (66 B in all). Nothing else
+may come between the two: after 256 busy samples the open core executes
+whatever follows it.
 Include `divmmc_write.inc` only if an A-input caller or the generic string/block
 helpers needs it. The L input is native, so an L caller needs no adapter.
 The fast selection alone intentionally has no `uart_write` label. Both
 `divmmc_core.inc` and `divmmc.inc` include that label and its compatible
-contract automatically. The +7 B/+37 T/+2 B stack tradeoff on compatible
-A-input writes buys a single shared algorithm with a zero-overhead Classic
-L entry. Read costs remain 60/103 T-states empty/byte.
+contract automatically. The +3 B/+34 T/+2 B stack tradeoff on compatible
+A-input writes, against the earlier 75 B core, buys a single shared algorithm
+with a zero-overhead Classic L entry. Read costs remain 60/103 T-states empty/byte.
 
 For z88dk, pass `-I <UartZX>/src` for nested includes, including the compatible
 divMMC core. Use consumer-owned SECTION/PUBLIC/EXTERN declarations; shared
@@ -280,7 +296,7 @@ means recovery remains incomplete: `UART_RX_OVERFLOW` is latched, including
 any hardware errors observed along the way, and guarded RX stays blocked.
 Handle UI/deadlines between calls; finish a later flush before reopening the
 stream. No quiet-window progress is retained between calls. The routine
-destroys A/BC/DE, preserves HL and IFF, adds 52 code bytes and no state.
+destroys A/BC/DE, preserves HL and IFF, adds 49 code bytes and no state.
 
 Do not blindly alias `uart_rx_errors` to `_next_uart_gap`. They currently
 have different representations and lifetimes: a hardware bitmap versus a
@@ -328,7 +344,7 @@ RX bytes and a 512-byte send at:
 | 115200 / 28 MHz | 2431 |
 | 2000000 / 28 MHz | 140 |
 
-At 2 Mbaud/28 MHz, use the optional `uart_read_block` (~98 T/byte while
+At 2 Mbaud/28 MHz, use the optional `uart_read_block` (~89 T/byte while
 data is queued) or an equally measured application drain: the guarded
 single-byte read plus bookkeeping is too slow. This test uses no competing
 ISR, physical wait states or full application ring. It demonstrates a
@@ -342,7 +358,7 @@ its RX errors and queues only when there is room. CF=0 means queued; CF=1
 with `uart_tx_failed=0` means temporarily full, so keep the byte/pointer and
 service RX before retrying. CF=1 with a nonzero latch means a previous
 blocking write failed; no status port is touched in that case. Busy never
-sets the TX failure latch. A/BC/DE/HL and IFF are preserved; cost is 29 code
+sets the TX failure latch. A/BC/DE/HL and IFF are preserved; cost is 28 code
 bytes and no state. Publish RX faults even when TX succeeds or is busy.
 
 Use an application deadline/poll budget; on exhaustion invoke the existing
@@ -398,7 +414,7 @@ consumes RX/TX data, reads status or clears hardware/software error latches.
 
 The sequence saves IFF, disables maskable interrupts around select/read/modify/
 write/restore, and restores IFF on exit. HL/IX/IY and alternate registers are
-preserved; AF/BC/DE are destroyed. Cost: 33 code bytes, zero persistent state
+preserved; AF/BC/DE are destroyed. Cost: 32 code bytes, zero persistent state
 and two temporary stack bytes. NMI handlers must not access UART registers
 during the sequence. There are no waits, AT commands or capability probes.
 The compatible full include and minimal core do not pull this leaf in;
@@ -452,7 +468,7 @@ the diagnostic NEX supplies a hardware-validation caller. See the
 [`examples/next_flow_uart.inc`](../examples/next_flow_uart.inc) supplies that
 selection as one include: core, immediate TX, budgeted recovery, wire-idle query,
 flow controls, effective-rate metadata and the 2000000 divisor table. It emits
-367 code/read-only bytes; allocate `next_vars.inc` separately in writable RAM
+355 code/read-only bytes; allocate `next_vars.inc` separately in writable RAM
 (two bytes). The example adds no entry points or state of its own. Its regression
 assembles identical bytes with sjasmplus/z88dk and links code and state in
 separate objects. Flow remains opt-in after board/ESP negotiation.
@@ -517,7 +533,13 @@ The [complete Next battery](next-batch.md#completed-repaired-battery-2026-11-17)
 passed 44 cases, including actual CPU selections at both UART rates, 50/60 Hz,
 the injected recovery checks and two hours of symmetric endurance. No physical
 AY/divMMC, bus-reset or competing interrupt-load check, or other VGA/HDMI
-clock-timing sweep, is claimed. Consumer adoption is outside this library
+clock-timing sweep, is claimed. The hardware runs predate the 2026-11-22 size
+pass and were not repeated. Of the routines the probe uses, that pass changed
+the code of `uart_init`/`uart_set_baud` (divisor write), `uart_read` and
+`uart_read_raw` (the error exit), `uart_flush_budget`, `uart_try_write` and the
+flow controls; side-by-side runs of old and new code give the same port
+accesses in the same order, which is model evidence, not a hardware result.
+Consumer adoption is outside this library
 validation. AY's existing provenance/licence qualification in the README remains.
 [External comparisons](external-comparisons.md) distinguish
 executed routine specimens from inspection, historical documentation and

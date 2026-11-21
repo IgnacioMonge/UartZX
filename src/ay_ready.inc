@@ -6,5 +6,5 @@ uart_ready:
     or a
     ret nz                      ; CF=0 while errors are latched
     ld a, (uart_second_avail)
-    add a, 0xFF                 ; CF=1 when not zero
+    rra                         ; 1 = a byte is kept: CF=1
     ret

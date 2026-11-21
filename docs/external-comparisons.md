@@ -59,7 +59,7 @@ declaring its fixed buffer address. This is not a build of either application.
 
 | Experiment | Original | Derivative | UartZX |
 |---|---:|---:|---:|
-| Steady RX cost, differential count at 100/200 bytes | 93 T/byte | 108 T/byte | 98 T/byte, existing block test |
+| Steady RX cost, differential count at 100/200 bytes | 93 T/byte | 108 T/byte | 98 T/byte, existing block test (89 since the 2026-11-22 size pass) |
 | Always-ready source, 2050 bytes, sentinel at `0x6800` | Stores 2050; overwrites sentinel | Stores 2048; sentinel intact | Caller bounds stores to supplied room |
 | Framing flag followed by byte `0x41` | Returns the byte; hardware flag cleared | Same | Latches `0x40`; returns no byte |
 
@@ -112,7 +112,7 @@ the command. These distinctions are sound reasons to keep negotiation in the
 application. Timing/reset anecdotes in comments were not reproduced. A
 library helper must not silently arm flow or assume an unknown board works.
 The subsequent authorized module, `next_flow.inc`, provides only the two
-register controls (33 B), preserving selection/divisors/IFF. It does not
+register controls (32 B), preserving selection/divisors/IFF. It does not
 implement or claim to validate that negotiation state machine.
 
 ### Decision
@@ -540,7 +540,7 @@ The operational additions are optional Next leaves: TX idle (13 code bytes)
 and effective fast-rate metadata (32 data bytes), with zero new persistent
 state. The earlier global-budget flush and immediate TX leaves also match
 concrete needs found in the comparison. Existing timed AY loops remain intact.
-The later optional flow-control leaf adds 33 code bytes and no state; callers
+The later optional flow-control leaf adds 32 code bytes and no state; callers
 explicitly enable or disable it after handling board/ESP prerequisites.
 
 The six comparisons are separate decisions, not votes for one globally best

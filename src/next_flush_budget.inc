@@ -22,8 +22,11 @@ uart_flush_budget_poll:
     dec hl
     ld a, h
     or l
-    jr z, uart_flush_budget_done
-    jr uart_flush_budget_count
+    jr nz, uart_flush_budget_count
+uart_flush_budget_done:
+    ld (uart_rx_errors), a      ; A = 0 and CF=0 from the window that ran out
+    pop hl
+    ret
 uart_flush_budget_byte:
     inc b
     in a, (c)
@@ -38,9 +41,4 @@ uart_flush_budget_count:
     set 2, (hl)                 ; recovery incomplete, as in uart_flush
     pop hl
     scf
-    ret
-uart_flush_budget_done:
-    xor a
-    ld (uart_rx_errors), a
-    pop hl
     ret

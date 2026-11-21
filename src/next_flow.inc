@@ -11,7 +11,7 @@
 
 uart_flow_enable:
     ld d, 0x20
-    jr uart_flow_update
+    defb 0x01                   ; LD BC,nn: its operand hides the next LD
 uart_flow_disable:
     ld d, 0
 uart_flow_update:

@@ -1,5 +1,10 @@
 # Next hardware telemetry probe
 
+> The hardware runs recorded here used the driver code of 2026-11-17. A size
+> pass on 2026-11-22 changed bytes in some of the routines the probe includes
+> (listed under [evidence limits](integration.md#evidence-limits)) and the
+> runs were not repeated; sizes quoted below are those of the run.
+
 `examples/next_probe.asm` builds a standalone, sjasmplus-only `UXPROBE.NEX`.
 `tools/next_probe.py` builds a run-matched image and collects its TCP diagnostic
 stream. No Python dependencies beyond the standard library are needed on the

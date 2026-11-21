@@ -11,12 +11,13 @@ uart_try_write:
     push af
     ld a, (uart_tx_failed)
     or a
-    jp nz, uart_write_failed
+    jr nz, uart_try_write_refuse ; NZ: taken again there
     ld bc, UART_TX
     in a, (c)
     and UART_STATUS_MASK
     cp UART_RX_OVERFLOW
     call nc, uart_latch_rx_error
     and UART_TX_FULL
+uart_try_write_refuse:
     jp nz, uart_write_failed
     jp uart_write_send

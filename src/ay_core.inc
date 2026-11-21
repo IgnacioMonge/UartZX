@@ -3,9 +3,11 @@
 ; AY bit-banged UART driver for the ESP: serial on I/O port A of the
 ; AY-3-8912. Needs ay_vars.inc; ay_speed.inc is optional.
 ;
-; The timed bit loops descend, through NetManZX, from netman-zx by Alex
-; Nihirash (github.com/nihirash/netman-zx), which publishes no licence: see
-; the licence section of the README.
+; The receive timing and its polling loops descend, through NetManZX, from
+; netman-zx by Alex Nihirash (github.com/nihirash/netman-zx), which
+; publishes no licence: see the licence section of the README. The bit loops
+; are shorter code written here that keeps every port access on the T-state
+; where those loops had it.
 ;
 ; Written in the syntax sjasmplus and z88dk-z80asm share: global labels only,
 ; EQU, 0x literals, no macros, modules or sections.
@@ -118,50 +120,31 @@ uart_write:
     push de
     push bc
     push af
-    ld l, a
     ld bc, UART_AY_REGISTER
-    ld a, UART_AY_PORT_A
-    out (c), a
-    ld de, UART_BIT_DELAY - 2
-    ld a, l
+    ld de, 11 * 256 + UART_AY_PORT_A ; D = 1 start, 8 data, 2 stop bits
+    out (c), e
+    ld b, UART_AY_DATA / 256    ; C is the same in both ports
     cpl
-    scf
-    ld b, 11                    ; 1 start, 8 data, 2 stop bits
+    ld e, a                     ; the byte inverted: CF=1 sends a low level
+    scf                         ; the start bit
 
-; 370 T-states per bit with UART_BIT_DELAY 11. Do not edit without measuring.
+; 370 T-states per bit with UART_BIT_DELAY 11, whatever the bit: both levels
+; take the same path. Do not edit without measuring.
 uart_write_bit:
-    push bc
-    push af
-
-    ld a, 0xfe
-    ld h, d
-    ld l, e
-    ld bc, UART_AY_DATA
-    jp nc, uart_write_one
-; Transmit Zero:
-    and 0xf7
+    sbc a, a                    ; CF=1: 0xFF, CF=0: 0x00
+    cpl
+    or 0xF7
+    dec a                       ; 0xF6 = TX low, 0xFE = TX high; CTS stays high
     out (c), a
-    jr uart_write_next
-uart_write_one:
-    or 8
-    out (c), a
-    jr uart_write_next
-
+    ld hl, UART_BIT_DELAY + 1
 uart_write_next:
     dec hl
     ld a, h
     or l
     jr nz, uart_write_next
-
-    nop
-    nop
-    nop
-
-    pop af
-    pop bc
-    or a
-    rra
-    djnz uart_write_bit
+    srl e                       ; the next bit; the zeros that follow the
+    dec d                       ; byte are the stop bits
+    jp nz, uart_write_bit       ; JP: 10 T-states taken or not
 
     pop af
     pop bc
@@ -176,23 +159,23 @@ uart_read:
     or a
     ret nz                      ; CF=0: no byte from a damaged stream
 uart_read_raw:
-    push hl
-    ld hl, uart_second_avail
-    ld a, (hl)
-    or a
-    jr z, uart_read_start
-    ld (hl), 0
-    inc hl
-    ld a, (hl)
-    pop hl
+    ld a, (uart_second_avail)
+    dec a                       ; it holds 1 while a byte is kept, 0 otherwise
+    jr nz, uart_read_start
+    ld (uart_second_avail), a
+    ld a, (uart_second_byte)
     scf
     ret
+; The delays, the poll count and the byte being received live in the main
+; set; the port constants in the alternate one, where the wait for a start
+; bit runs. EXX switches between them.
 uart_read_start:
+    push hl
     push de
     di
-    exx
     ld de, UART_BIT_DELAY
-    ld hl, UART_BIT_DELAY / 2
+    ; To the middle of the first data bit, 1.5 bit times after the start edge.
+    ld hl, UART_BIT_DELAY / 2 + UART_BIT_DELAY + 1
     ld b, UART_START_POLLS
     exx
     ld bc, UART_AY_REGISTER
@@ -204,8 +187,10 @@ uart_read_start:
     ld a, UART_LINE_LISTEN
     out (c), a                  ; CTS low
 
-; From here to uart_read_byte the code is timed. Do not edit without
-; measuring (tests/test_ay.py sweeps the bit period it accepts).
+; From here to the last port access the code is timed: every IN and OUT falls
+; on a fixed T-state after the previous one, and the instructions marked as
+; delay only pass time. Do not edit without measuring (tests/test_ay.py
+; sweeps the bit period it accepts).
 uart_read_wait_start:
     ld b, d
     in a, (c)
@@ -228,6 +213,7 @@ uart_read_late_next:
     dec l
     jr nz, uart_read_late
 uart_read_none:
+    exx
     pop de
     pop hl
     xor a                       ; CF=0
@@ -241,9 +227,8 @@ uart_read_late_found:
     and 0x80
     jr nz, uart_read_late_next
     exx
-    dec l                       ; one delay step less: this path is slower
-    exx
-    jp uart_read_start_bit
+    ld hl, UART_BIT_DELAY / 2 + UART_BIT_DELAY ; one delay step less: this path is slower
+    jr uart_read_first_bit
 uart_read_start_found:
     in a, (c)
     and 0x80
@@ -254,44 +239,32 @@ uart_read_start_found:
     jr nz, uart_read_timeout
 uart_read_start_bit:
     ; Start bit found!
-
     exx
-    ld bc, UART_AY_REGISTER
-    ld a, 0x80
-    ex af, af'
+uart_read_first_bit:
+    ld b, 0x80                  ; the byte gathers in B; its eighth shift
+    jr uart_read_delay          ; carries this bit out
 uart_read_tune:
-    add hl, de ; HL = 1.5 * UART_BIT_DELAY
-    nop
-    nop
-    nop
-    nop ; Fine tuning delay
-
+    add hl, de
+    inc hl                      ; HL = UART_BIT_DELAY + 1
+    ld a, 0                     ; delay
 uart_read_delay:
     dec hl
     ld a, h
     or l
     jr nz, uart_read_delay
 
-    in a, (c)
-    and 0x80
-    jp z, uart_read_zero
-; One received:
-    ex af, af'
-    scf
-    rra
-    jr c, uart_read_byte
-    ex af, af'
-    jp uart_read_tune
-uart_read_zero:
-    ex af, af'
-    or a
-    rra
-    jr c, uart_read_byte
-    ex af, af'
-    jp uart_read_tune
+    cpl                         ; A = 0xFF: IN A,(n) reads port 0xFFFD
+    in a, (UART_AY_REGISTER & 0xFF)
+    rla                         ; the line -> CF
+    rr b
+    jr nc, uart_read_tune
 uart_read_byte:
+    ld a, b
     scf
     push af                     ; the byte, CF=1
+    dec hl
+    dec hl                      ; HL = -2. INC BC is delay
+    inc bc
     exx
     ld a, UART_LINE_IDLE
     ld b, e
@@ -299,20 +272,14 @@ uart_read_byte:
 
 ; The ESP may already have started another byte: wait for it.
     exx
-    ld h, d
-    ld l, e
-
-    ld bc, 0x0003               ; to the middle of the stop bit
-    or a
-    sbc hl, bc
-
+    ld bc, UART_AY_REGISTER
+    add hl, de                  ; UART_BIT_DELAY - 2: to the middle of the stop bit
 uart_read_stop_delay:
     dec hl
     ld a, h
     or l
     jr nz, uart_read_stop_delay
 
-    ld bc, UART_AY_REGISTER
     in a, (c)                   ; the stop bit
     and 0x80
     jr z, uart_read_bad_stop
@@ -332,7 +299,6 @@ uart_read_second_next:
 
     ; No second byte
 uart_read_done:
-    exx
     pop af
     pop de
     pop hl
@@ -340,32 +306,26 @@ uart_read_done:
     ret
 
 uart_read_bad_stop:
+    pop af                      ; the byte is not whole: dropped. The exit
+    xor a                       ; takes A = 0 and CF=0 from the stack instead
+    push af
+uart_read_second_bad:           ; (the first byte is whole and is returned)
     ld a, UART_RX_FRAMING
     ld (uart_rx_errors), a
-    exx
-    pop af                      ; the byte is not whole: dropped
-    jp uart_read_none
+    jr uart_read_done
 
 uart_read_second_found:
     in a, (c)
     and 0x80
     jr nz, uart_read_second_next ; a false start still uses up a poll
-    ld h, d
-    ld l, e
-    ld bc, 0x0002
-    srl h
-    rr l
-    or a
-    sbc hl, bc
-    ld bc, UART_AY_REGISTER
-    ld a, 0x80
-    ex af, af'
+    ld b, 0x80
+    add hl, de                  ; delay, with the INC
+    inc hl
+    ld hl, UART_BIT_DELAY / 2 + UART_BIT_DELAY
+    jr uart_read_second_delay
 uart_read_second_tune:
-    nop
-    nop
-    nop
-    nop
-    add hl, de
+    ld hl, UART_BIT_DELAY + 1
+    nop                         ; delay
 
 uart_read_second_delay:
     dec hl
@@ -373,43 +333,30 @@ uart_read_second_delay:
     or l
     jr nz, uart_read_second_delay
 
-    in a, (c)
-    and 0x80
-    jr z, uart_read_second_zero
-; Second 1 received
-    ex af, af'
-    scf
-    rra
-    jr c, uart_read_second_done
-    ex af, af'
-    jp uart_read_second_tune
-
+    cpl
+    in a, (UART_AY_REGISTER & 0xFF)
+    rla
+    ; After a zero bit the next sample comes 5 T-states later than after a
+    ; one, as it always has: the taken JR is that difference.
+    jr nc, uart_read_second_zero
 uart_read_second_zero:
-    ex af, af'
-    or a
-    rra
-    jr c, uart_read_second_done
-    ex af, af'
-    jp uart_read_second_tune
+    rr b
+    jr nc, uart_read_second_tune
 uart_read_second_done:
-    ex af, af'                  ; keep the byte while its stop bit comes
-    ld h, d
-    ld l, e
+    add hl, de                  ; UART_BIT_DELAY: to the middle of the stop bit
+    ret c                       ; delay: the ADD left CF=0, neither RET returns
+    ret c
 uart_read_second_stop:
     dec hl
     ld a, h
     or l
     jr nz, uart_read_second_stop
-    in a, (c)
-    and 0x80
-    jr z, uart_read_second_bad
-    ex af, af'
+    cpl
+    in a, (UART_AY_REGISTER & 0xFF)
+    rla
+    jr nc, uart_read_second_bad
     ld hl, uart_second_avail
-    ld (hl), 1
+    inc (hl)                    ; 0 -> 1: the read began with it clear
     inc hl
-    ld (hl), a                  ; uart_second_byte
-    jr uart_read_done
-uart_read_second_bad:
-    ld a, UART_RX_FRAMING       ; the first byte is whole and is returned
-    ld (uart_rx_errors), a
+    ld (hl), b                  ; uart_second_byte
     jr uart_read_done

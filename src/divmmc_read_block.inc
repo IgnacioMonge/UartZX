@@ -15,15 +15,19 @@ uart_read_block_byte:
     ld a, UART_DATA_REG
     out (c), a
     inc b
-    in a, (c)                   ; RTS drops here: the ESP sends the next byte
-    ld (hl), a
-    inc hl
-    dec b
-    ld a, UART_STAT_REG
+    ini                         ; store, HL+1, B back to ZXUNO_ADDR. RTS drops
+                                ; here: the ESP sends the next byte
+    inc a                       ; UART_STAT_REG = UART_DATA_REG + 1
     out (c), a
     inc b
     dec d
-    ret z                       ; buffer full, CF=1 from the last ready test
+    scf                         ; INI leaves CF undefined on real hardware
+    ret z                       ; buffer full, CF=1
+    ; 12 T-states of delay: they keep the status samples where they were
+    ; before INI shortened this path, 2 T-states after a byte that the ESP
+    ; sends at once (see the test). Without them that byte waits 13.
+    jr uart_read_block_idle
+uart_read_block_idle:
     ld e, UART_IDLE_POLLS
 uart_read_block_poll:
     ; Four samples per round keep the wait between a byte arriving and its

@@ -1,4 +1,4 @@
-; Optional Next duplex selection: 367 code/read-only bytes, plus next_vars.inc.
+; Optional Next duplex selection: 355 code/read-only bytes, plus next_vars.inc.
 ; Include once; allocate the two state bytes separately in writable RAM.
 ; Caller checks board support, configures ESP UART_CUR and bounds transactions.
 ; uart_init starts at 115200 with flow off; enable after ESP negotiation.

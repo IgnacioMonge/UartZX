@@ -118,7 +118,7 @@ class Ay(unittest.TestCase):
         for byte in data:
             first = len(uart.tx)
             took = d.call("uart_write", a=byte, bc=0x1111, de=0x2222, hl=0x3333)
-            self.assertEqual((d.carry, took), (False, 4233))
+            self.assertEqual((d.carry, took), (False, 4227))
             self.assertEqual(
                 (d.m.a, d.m.bc, d.m.de, d.m.hl), (byte, 0x1111, 0x2222, 0x3333)
             )
@@ -136,7 +136,7 @@ class Ay(unittest.TestCase):
         self.assertFalse(d.carry)
         self.assertEqual((d.m.de, d.m.hl, uart.regs[14]), (0x1234, 0x5678, IDLE))
         self.assertTrue(d.m.iff1)
-        self.assertEqual(took, 13742)  # 3.9 ms
+        self.assertEqual(took, 13738)  # 3.9 ms
         d.device = NoAy()  # no AY at all: the bus floats high
         self.assertIsNone(self.read())
 
@@ -190,6 +190,29 @@ class Ay(unittest.TestCase):
                 self.assertEqual(d.io, 0, "the kept byte needs no port access")
                 d.call("uart_ready")
                 self.assertFalse(d.carry)
+
+    def test_read_port_accesses_keep_their_t_states(self):
+        # T-states from each port access of a read to the next: the timing of
+        # the netman-zx loops, which no change to the code may move.
+        d = self.d
+        uart = self.esp(flow=False)
+        times = []
+        inp, out = uart.inp, uart.out
+        uart.inp = lambda port: (times.append(d.clock()), inp(port))[1]
+        uart.out = lambda port, value: (times.append(d.clock()), out(port, value))[1]
+        uart.feed(b"\x41\xa5", delay=500)
+        self.assertEqual(self.read(), 0x41)
+        self.assertEqual((d.byte("uart_second_avail"), d.byte("uart_second_byte")), (1, 0xA5))
+        gaps = [later - sooner for sooner, later in zip(times, times[1:])]
+        first = gaps.index(31)  # a start bit seen: two samples confirm it
+        self.assertEqual(gaps[:2], [23, 16])  # select, CTS low, first sample
+        self.assertEqual(set(gaps[2:first]), {54})
+        second = gaps.index(31, first + 1)
+        self.assertEqual(gaps[first:first + 13],
+                         [31, 26, 489] + 7 * [370] + [83, 266, 59])  # CTS high, stop bit
+        self.assertEqual(set(gaps[first + 13:second]), {52})
+        # 0xA5, least significant bit first: 5 T-states more after each zero.
+        self.assertEqual(gaps[second:], [31, 486, 367, 372, 367, 372, 372, 367, 372, 343])
 
     def test_read_is_bounded_on_a_chattering_line(self):
         d = self.d

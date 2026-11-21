@@ -16,8 +16,7 @@ uart_flush_poll:
     or e
     jr nz, uart_flush_poll
 uart_flush_done:
-    xor a                       ; CF=0
-    ld (uart_rx_errors), a
+    ld (uart_rx_errors), a      ; A = 0 and CF=0 from the count that ran out
     pop hl
     ret
 uart_flush_byte:

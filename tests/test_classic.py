@@ -141,9 +141,9 @@ class Classic(unittest.TestCase):
                 image = sjasmplus(tmp, "sj", includes)
                 assert image == z80asm(tmp, "z80", includes)
                 table = symbols((tmp / "sj.sym").read_text())
-                assert table["specimen_end"] - ORG == 90 + 12 * compatible
+                assert table["specimen_end"] - ORG == 89 + 12 * compatible
                 linked = classic_link(tmp, compatible)
-                assert len(linked[0][ORG]) == 10 + 90 + 12 * compatible
+                assert len(linked[0][ORG]) == 10 + 89 + 12 * compatible
                 assert len(linked[0][0xC000]) == 6  # all external, not new driver state
                 cls.images[compatible] = linked
 
@@ -193,7 +193,7 @@ class Classic(unittest.TestCase):
                             d, uart = self.driver(compatible)
                             uart.feed(b"RX")
                             took = self.invoke(d, entry, byte=byte, compatible=compatible, iff=iff, flags=flags)
-                            self.assertEqual(took, 235 if compatible else 150)
+                            self.assertEqual(took, 232 if compatible else 147)
                             self.assertFalse(d.carry)
                             self.assertEqual((uart.sent, uart.status_reads, uart.data_reads), (bytes([byte]), 1, 0))
                             self.assertEqual((d.state_reads, d.failures), (1, 0))
@@ -284,10 +284,26 @@ class Classic(unittest.TestCase):
                 self.assertEqual(d.m.e, number - 10)
                 self.assertFalse(d.carry)
 
+    def test_open_and_closed_fast_cores_are_the_same_code(self):
+        # Two files hold this code because z88dk finds a nested include only
+        # with -I, and the fast selection has always built without it.
+        with tempfile.TemporaryDirectory() as folder:
+            tmp = Path(folder)
+            images = {}
+            for name in ("divmmc_fast_open.inc", "divmmc_fast.inc"):
+                lines = ["uart_tx_failed EQU 0x9000", "uart_tx_fail EQU 0x9123",
+                         f'    INCLUDE "{source(name)}"']
+                images[name] = assemble(tmp, "one", [f"    ORG {ORG}"] + lines,
+                                        "z88dk-z80asm", "-b", "-o=one.bin", "one.asm")
+            self.assertEqual(images["divmmc_fast.inc"],
+                             images["divmmc_fast_open.inc"] + bytes([0xC3, 0x23, 0x91]))
+
     def test_default_and_compatible_selections_and_send_helpers(self):
         command = b"CMD arg\r\n"
-        for parts, size in ((["divmmc_fast.inc", "divmmc_tx_fail.inc"], 70),
-                            (["divmmc_core.inc"], 82), (["divmmc.inc"], 163)):
+        for parts, size in ((["divmmc_fast.inc", "divmmc_tx_fail.inc"], 69),
+                            # Left open, the core runs into the destination: no jump.
+                            (["divmmc_fast_open.inc", "divmmc_tx_fail.inc"], 66),
+                            (["divmmc_core.inc"], 78), (["divmmc.inc"], 158)):
             with self.subTest(parts=parts), tempfile.TemporaryDirectory() as folder:
                 tmp = Path(folder)
                 includes = [source(p) for p in parts + ["divmmc_vars.inc"]]
@@ -295,7 +311,7 @@ class Classic(unittest.TestCase):
                 self.assertEqual(image, z80asm(tmp, "z80", includes))
                 self.assertEqual(len(image), size + 1)
                 table = symbols((tmp / "sj.sym").read_text())
-                self.assertEqual("uart_write" in table, parts != ["divmmc_fast.inc", "divmmc_tx_fail.inc"])
+                self.assertEqual("uart_write" in table, parts[-1] != "divmmc_tx_fail.inc")
                 if "uart_write" not in table:
                     uart = ClassicUart(absent=True)
                     d = Driver((), uart, linked=({ORG: image}, table))

@@ -315,14 +315,14 @@ class Next(unittest.TestCase):
 
     def test_read(self):
         d = self.d
-        self.assertEqual(d.call("uart_read_raw", de=0x1234, hl=0x5678), 66)
+        self.assertEqual(d.call("uart_read_raw", de=0x1234, hl=0x5678), 58)
         self.assertFalse(d.carry)
-        self.assertEqual(d.call("uart_read"), 88)
+        self.assertEqual(d.call("uart_read"), 80)
         self.assertFalse(d.carry)
         self.uart.feed(b"\x00Q")
-        self.assertEqual(d.call("uart_read_raw"), 86)
+        self.assertEqual(d.call("uart_read_raw"), 78)
         self.assertEqual((d.carry, d.m.a), (True, 0))
-        self.assertEqual(d.call("uart_read"), 108)
+        self.assertEqual(d.call("uart_read"), 100)
         self.assertEqual(
             (d.carry, d.m.a, d.m.de, d.m.hl), (True, ord("Q"), 0x1234, 0x5678)
         )

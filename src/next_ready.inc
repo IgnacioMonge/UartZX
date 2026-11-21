@@ -9,7 +9,6 @@ uart_ready:
     in a, (c)
     and UART_STATUS_MASK
     cp UART_RX_OVERFLOW
-    call nc, uart_latch_rx_error
-    ret nc
+    jp nc, uart_latch_rx_error  ; returns for this routine, CF=0
     rrca
     ret

@@ -14,13 +14,11 @@ uart_read_block:
     rrca
     ret nc                      ; nothing waiting
 uart_read_block_byte:
-    inc b
-    in a, (c)
-    dec b
-    ld (hl), a
-    inc hl
+    inc b                       ; UART_RX
+    ini                         ; store, HL+1, B back to UART_TX
     dec d
-    ret z                       ; buffer full, CF=1 from the ready test
+    scf                         ; INI leaves CF undefined on real hardware
+    ret z                       ; buffer full, CF=1
     ld e, UART_IDLE_POLLS
 uart_read_block_poll:
     in a, (c)
@@ -33,6 +31,4 @@ uart_read_block_poll:
     jr nz, uart_read_block_poll
     ret                         ; line idle, CF=0
 uart_read_block_error:
-    call uart_latch_rx_error
-    or a                        ; CF=0
-    ret
+    jp uart_latch_rx_error      ; returns for this routine; CF=0 from the test

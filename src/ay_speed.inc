@@ -16,7 +16,8 @@
 ; 118,230 at 3.5469 MHz (2.6 % fast). The loop cannot be a counted one: the
 ; nine timed bits of each character are written out, and only the stop bit,
 ; which may be any length, carries the loop. OUTI lowers B, so every bit
-; reloads it and all of them use the same port address.
+; puts it back and all of them use the same port address. INC B leaves Z
+; clear, so the two RET Z never return: they are 5 T-states of delay each.
 
 uart_esp_set_9600:
     ld bc, UART_AY_REGISTER
@@ -24,36 +25,45 @@ uart_esp_set_9600:
     di
     out (c), a
     ld hl, uart_speed_sequence
-    ld bc, UART_AY_DATA
+    ld b, UART_AY_DATA / 256    ; C is the same in both ports
     ld e, 28                    ; characters
 uart_esp_set_9600_char:
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi
-    ld bc, UART_AY_DATA
-    nop
+    inc b
+    ret z
+    ret z
     outi                        ; the stop bit
     ld bc, UART_AY_DATA
     dec e

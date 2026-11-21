@@ -40,8 +40,8 @@
 ;                    Destroys A, BC, DE, HL.
 ;   uart_read        CF=1 and A = byte, or CF=0: nothing waiting, or errors
 ;                    latched (uart_rx_errors is not zero). Destroys BC.
-;                    Preserves DE, HL. 88 T-states empty, 108 with a byte.
-;   uart_read_raw    As uart_read without the latch gate: 66 and 86 T-states.
+;                    Preserves DE, HL. 80 T-states empty, 100 with a byte.
+;   uart_read_raw    As uart_read without the latch gate: 58 and 78 T-states.
 ;                    The read that latches a new error still reports no byte;
 ;                    the next one carries on.
 ;   uart_ready       CF=1 when a byte is waiting and no error is latched; the
@@ -61,7 +61,7 @@
 ;                    shows; returns at once when nothing is waiting or errors
 ;                    are latched. Out: HL = next free position, D = room
 ;                    left, CF=1 buffer full, CF=0 otherwise. Destroys A, BC,
-;                    E. About 98 T-states per byte while the FIFO has data.
+;                    E. About 89 T-states per byte while the FIFO has data.
 ;   uart_esp_reset   Hold the ESP in reset for UART_RESET_FRAMES frames. The
 ;                    same NextReg bit resets the expansion bus: a device on it
 ;                    is reset too. Needs interrupts enabled on entry and
@@ -120,10 +120,9 @@ uart_init:
     ld a, UART_SELECT_ESP
     out (c), a
     inc b                       ; UART_FRAME
-    ld a, UART_FRAME_RESET
-    out (c), a
-    ld a, UART_FRAME_8N1
-    out (c), a
+    ld de, UART_FRAME_RESET * 256 + UART_FRAME_8N1
+    out (c), d
+    out (c), e
     ld hl, uart_baud_115200
 
 uart_set_baud:
@@ -147,18 +146,16 @@ uart_set_baud_index:
     ld e, a
     ld d, 0
     add hl, de
-    ld e, (hl)
+    ld a, (hl)
     inc hl
-    ld d, (hl)                  ; DE = divisor
-    ld bc, UART_RX
-    ld a, e
+    ld h, (hl)
+    ld l, a                     ; HL = divisor
+    ld b, UART_RX / 256         ; C is already the low byte of every port here
     and 0x7F
     out (c), a                  ; bits 6..0
-    ld a, d
-    rl e
-    rla
-    or 0x80
-    out (c), a                  ; bits 13..7
+    add hl, hl
+    set 7, h
+    out (c), h                  ; bits 13..7
     ret
 
 ; Divisors for 115200 baud, indexed by NextReg 0x11 (video timing).
@@ -185,8 +182,8 @@ uart_read_raw:
     in a, (c)
     and UART_STATUS_MASK
     cp UART_RX_OVERFLOW
-    call nc, uart_latch_rx_error
-    ret nc                      ; this read saw the error: report no byte
+    jr nc, uart_latch_rx_error  ; this read saw the error: the latch routine
+                                ; returns for it with CF=0, no byte
     rrca                        ; RX ready -> CF
     ret nc
     inc b                       ; UART_RX

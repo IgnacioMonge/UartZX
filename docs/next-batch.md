@@ -1,5 +1,10 @@
 # One-launch Next validation battery
 
+> The hardware runs recorded here used the driver code of 2026-11-17. A size
+> pass on 2026-11-22 changed bytes in some of the routines the probe includes
+> (listed under [evidence limits](integration.md#evidence-limits)) and the
+> runs were not repeated; sizes quoted below are those of the run.
+
 Build and collect with the same host tool and official BridgeZX device registry
 as the [short and sustained probes](next-probe.md):
 

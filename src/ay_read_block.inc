@@ -10,5 +10,4 @@ uart_read_block_next:
     inc hl
     dec d
     jr nz, uart_read_block_next
-    scf
-    ret
+    ret                         ; buffer full: CF=1 from the last read

@@ -8,9 +8,9 @@ backends, the same entry points on all of them.
 
 | Backend | Hardware | Minimal code | Compatible full code | State |
 |---|---|---:|---:|---:|
-| divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 82 B | 163 B | 1 B |
-| Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 192 B | 339 B | 2 B |
-| AY | Serial on AY-3-8912 port A, 9600 baud | 403 B | 478 B | 3 B |
+| divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 78 B | 158 B | 1 B |
+| Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 185 B | 322 B | 2 B |
+| AY | Serial on AY-3-8912 port A, 9600 baud | 326 B | 399 B | 3 B |
 
 Minimal means `src/<backend>_core.inc`; full means the existing
 `src/<backend>.inc`. Both need `src/<backend>_vars.inc` in RAM, or equivalent
@@ -62,7 +62,7 @@ using a backend: they are not identical. In particular:
   initialization still turns flow off.
   The [duplex flow selection](examples/next_flow_uart.inc) combines these
   optional controls with the core, recovery, TX idle and 2 Mbaud metadata/table:
-  367 code/read-only bytes plus the two separately allocated state bytes.
+  355 code/read-only bytes plus the two separately allocated state bytes.
   `uart_write_block` reads no input while it sends. With flow disabled, at the
   same rate both ways with both FIFOs initially empty, a send longer than 575 bytes can
   overflow the RX FIFO at 115200 baud, and a shorter one at faster rates
@@ -102,7 +102,8 @@ the rest, so the programs can share one driver instead of five.
 - NetManZX is based on [netman-zx](https://github.com/nihirash/netman-zx) by
   Alex Nihirash, which has an AY, a ZX-Uno and a Next driver, and the other
   programs' drivers share its register names and access sequences. The AY
-  backend here still carries its timed bit loops almost unchanged; the
+  backend here still carries its receive polling loops and all its bit
+  timing; the
   divMMC and Next backends were redesigned from the HDL but keep that
   vocabulary.
 - The hardware behaviour the drivers rely on was read from the published
@@ -198,14 +199,16 @@ For AY:
 
 For a divMMC consumer passing the byte in L, select `divmmc_fast.inc`
 instead. `uart_write_fast` preserves E/HL, clobbers AF/BC/D, uses no internal
-stack, and sends in 150 T-states with TX ready. Supply `uart_tx_fail` as an
+stack, and sends in 147 T-states with TX ready. Supply `uart_tx_fail` as an
 assembly-time destination, or include `divmmc_tx_fail.inc` for the default
-state-1 latch. Add `divmmc_write.inc` only when the A-input, register-preserving
+state-1 latch. With that default, `divmmc_fast_open.inc` followed directly by
+`divmmc_tx_fail.inc` is 3 B smaller: the core runs into the destination
+instead of jumping to it. Add `divmmc_write.inc` only when the A-input, register-preserving
 `uart_write` API or the generic send helpers are needed. The existing
 `divmmc_core.inc` and `divmmc.inc` include both leaves automatically.
 The complete [Classic example](examples/classic_uart.inc) uses the application's
-failure handler directly: **90 B code including initialization**, the existing
-shared state byte, **zero internal TX stack and 150 T-states per ready send**.
+failure handler directly: **89 B code including initialization**, the existing
+shared state byte, **zero internal TX stack and 147 T-states per ready send**.
 
 Do not combine a full backend include with its core or leaves. Optional leaves
 normally follow the core. The exception is `ay_init_keep_mixer.inc`: put it
@@ -222,23 +225,23 @@ or machine code. The linker does not prune functions inside a selected object.
 |---|---:|---:|---:|
 | `divmmc_write.inc` / compatible A-input `uart_write` | 12 B | — | — |
 | `divmmc_tx_fail.inc` / default first-failure destination | 7 B | — | — |
-| `<backend>_ready.inc` / `uart_ready` | 12 B | 20 B | 11 B |
-| `<backend>_flush.inc` / `uart_flush` | 12 B | 43 B | 38 B |
-| `<backend>_read_block.inc` / `uart_read_block` | 57 B | 49 B | 12 B |
+| `<backend>_ready.inc` / `uart_ready` | 12 B | 19 B | 10 B |
+| `<backend>_flush.inc` / `uart_flush` | 12 B | 42 B | 38 B |
+| `<backend>_read_block.inc` / `uart_read_block` | 56 B | 45 B | 11 B |
 | `send_string.inc` / `uart_write_string` | 10 B | 10 B | 10 B |
 | `send_block.inc` / `uart_write_block` | 12 B | 12 B | 12 B |
 | `send.inc` / both send helpers | 22 B | 22 B | 22 B |
-| `next_reset.inc` / `uart_esp_reset_assert`, `uart_esp_reset_release` | — | 24 B | — |
-| `next_esp_reset.inc` / legacy frame-wait reset, including `next_reset.inc` | — | 35 B | — |
+| `next_reset.inc` / `uart_esp_reset_assert`, `uart_esp_reset_release` | — | 23 B | — |
+| `next_esp_reset.inc` / legacy frame-wait reset, including `next_reset.inc` | — | 31 B | — |
 | Each `next_baud_*.inc` optional table | — | 16 B | — |
 | `next_write_block.inc` / `uart_write_block_fast` | — | 46 B | — |
-| `next_try_write.inc` / `uart_try_write` | — | 29 B | — |
-| `next_flush_budget.inc` / `uart_flush_budget` | — | 52 B | — |
+| `next_try_write.inc` / `uart_try_write` | — | 28 B | — |
+| `next_flush_budget.inc` / `uart_flush_budget` | — | 49 B | — |
 | `next_tx_idle.inc` / `uart_tx_idle` | — | 13 B | — |
 | `next_baud_khz.inc` / both fast-mode effective-rate tables | — | 32 B | — |
-| `next_flow.inc` / `uart_flow_enable`, `uart_flow_disable` | — | 33 B | — |
+| `next_flow.inc` / `uart_flow_enable`, `uart_flow_disable` | — | 32 B | — |
 | `ay_init_keep_mixer.inc` / `uart_init_keep_mixer` | — | — | 14 B |
-| `ay_speed.inc` / persistent ESP rate change | — | — | 360 B |
+| `ay_speed.inc` / persistent ESP rate change | — | — | 350 B |
 
 `uart_set_baud` and `uart_baud_115200` stay in the Next core: `uart_init`
 uses both. Omitting the other baud tables removes all their bytes. The AY
@@ -247,22 +250,36 @@ TX failure byte are required by the duplex core, not by optional helpers.
 
 | Configuration | divMMC code + state | Next code + state | AY code + state |
 |---|---:|---:|---:|
-| Minimal compatible duplex core | 82 + 1 B | 192 + 2 B | 403 + 3 B |
-| Compatible full include | 163 + 1 B | 339 + 2 B | 478 + 3 B |
-| Optional duplex flow selection | — | 367 + 2 B | — |
-| Full + both send helpers + all applicable optional leaves/tables/speed | 185 + 1 B | 646 + 2 B | 860 + 3 B |
+| Minimal compatible duplex core | 78 + 1 B | 185 + 2 B | 326 + 3 B |
+| Compatible full include | 158 + 1 B | 322 + 2 B | 399 + 3 B |
+| Optional duplex flow selection | — | 355 + 2 B | — |
+| Full + both send helpers + all applicable optional leaves/tables/speed | 180 + 1 B | 624 + 2 B | 771 + 3 B |
 
-The full Next include is 10 code bytes larger than before this split: its
-reset now shares assert/release controls that preserve IFF. The minimal core
-omits those 35 bytes entirely. AY's full flush adds 5 bytes for its recovery
-latch; the AY core and timed bit loops are unchanged. divMMC's
-shared fast core is 63 B with an application failure destination, or 70 B with
-the default destination; the compatible A adapter adds 12 B. This makes the
-compatible core/full selections 7 B larger and A-input TX 235 T-states instead
-of 198; the Classic L-input path omits that cost. Next read
-remains 88/108 T-states empty/byte, raw read 66/86, and immediate write 152;
-AY write remains 4233 T-states. These are model costs without physical contention
-or Next wait states.
+The full Next reset shares assert/release controls that preserve IFF; the
+minimal core omits those 31 bytes entirely. divMMC's shared fast core is 62 B
+with an application failure destination, 69 B with the default one behind its
+jump, or 66 B when `divmmc_fast_open.inc` runs straight into it; the
+compatible A adapter adds 12 B and makes A-input TX 232 T-states with TX
+ready, against 147 for the L entry. Next read is 80/100 T-states empty/byte,
+raw read 58/78, and immediate write 152. AY write is 4227 T-states, 370 per
+bit; AY read takes 5483 with a byte and 13738 when it times out. These are
+model costs without physical contention or Next wait states.
+
+The cores reached these sizes in a size pass on 2026-11-22 that left entry
+points, register contracts, state and every port access as they were.
+`tools/compare_ports.py` checks that: it runs the drivers of a Git revision
+and of the working tree side by side on the same random inputs and compares
+ports, values and order, and on the AY the T-state of each access as well.
+`python tools/compare_ports.py c608493 all --cases 20000` repeats the
+comparison with the code before the pass; `--bitdelay 25` and `--bitdelay 54`
+cover the other bit delays the source names. What the test suite checks on
+every run is narrower: the sizes, the Next and divMMC costs above, the 370
+T-states of every AY bit sent and the T-state of each port access of one
+two-byte AY read. No routine
+that runs per byte or per poll takes longer than before; three exits that
+run once or after a failure (`uart_esp_reset_release`, a refused
+`uart_try_write`, an AY byte with a bad stop bit) take 10 to 12 T-states
+more.
 
 [Integration and SpecTalkZX adoption](docs/integration.md) covers fast L-input
 and compatible A-input selection, before/after measurements, shared TX state,
@@ -309,9 +326,9 @@ z88dk-z80asm build 24860-762578732c-20260630.
 - `test_modularity.py`: minimal/full configurations and independent optional
   leaves assemble with both tools and link from separate application/driver
   objects; emitted code, BSS size, omitted labels and mandatory safety are checked.
-- `test_classic.py`: complete 90-byte Classic specimen and optional compatible
+- `test_classic.py`: complete 89-byte Classic specimen and optional compatible
   A adapter assembled with both tools, with separate-object z88dk links. Real
-  instructions check the 150/235 T-state paths, E/HL and compatible register
+  instructions check the 147/232 T-state paths, E/HL and compatible register
   contracts, carry, IFF, alternate registers, stack, one shared-state read,
   256-poll timeout, absent UART, effects once, states 1/2, partial strings and
   blocks, inline SNTP's E lifetime, and ten frame waits plus 512 startup reads.
@@ -320,6 +337,8 @@ z88dk-z80asm build 24860-762578732c-20260630.
 - `test_ay.py`: the AY driver against a model of the AY port and an ESP at
   9600 baud. Every bit sent is decoded and every bit received is sampled in
   emulated T-states, at the 48K and 128K clocks and with the ESP 2.5 % off.
+- `test_compare_ports.py`: `tools/compare_ports.py` finds no difference
+  between a tree and itself, and reports a driver with one poll less.
 - `test_probe_cpu.py`, `test_probe_host.py`: the hardware probe's complete AT
   sequence, bounded reads, matrix/board selection and payloads on the CPU;
   fragmented TCP reports, run tokens, corruption and incomplete runs on the host.
@@ -334,16 +353,22 @@ z88dk-z80asm build 24860-762578732c-20260630.
 - `docs/baseline-review.md`: the comparison of the application drivers.
 - `docs/sources.md`: which versions of which programs were compared.
 - `tests/`: assembly and emulation checks.
+- `tools/compare_ports.py`: compares the drivers of two revisions access by
+  access; `tools/next_probe.py` builds and collects the hardware probe.
 
 ## Licence
 
 [MIT](LICENSE): use it, change it and ship it in anything, keeping the
 copyright notice.
 
-One exception to check before relying on that: the timed bit loops in
-`src/ay_core.inc` come, almost unchanged, from
+One exception to check before relying on that: the timed receive code in
+`src/ay_core.inc` comes from
 [netman-zx](https://github.com/nihirash/netman-zx) by Alex Nihirash, through
-NetManZX. netman-zx publishes no licence: on 2026-11-16 it had no licence
+NetManZX. Its loops that wait for a start bit, confirm it and wait for a
+second byte are still almost unchanged. The loops that send and sample the
+bits were rewritten here on 2026-11-22 as shorter code, but they reproduce
+the original timing T-state for T-state, so they remain derived from it.
+netman-zx publishes no licence: on 2026-11-16 it had no licence
 file, and its latest commit, `9cd6173`, is the one compared here. No licence
-or permission from its author for those loops is recorded in this
+or permission from its author for that code is recorded in this
 repository.

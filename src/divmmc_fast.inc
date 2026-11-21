@@ -1,4 +1,6 @@
 ; Fast duplex core: init, read/raw read and L-input write.
+; divmmc_fast_open.inc is this same code without the final jump; a test
+; keeps the two files byte for byte alike. Change both together.
 ; Requires uart_tx_failed storage and a uart_tx_fail destination (see below).
 ; divMMC / ZX-Uno UART driver (ZX-Uno compatible UART: divTIESUS, ZX-Uno).
 ; Compatible storage: divmmc_vars.inc. Hardware fixes the baud rate
@@ -38,7 +40,7 @@
 ;   uart_write_fast  L = byte. CF=0 sent, CF=1 not sent. Destroys AF, BC, D.
 ;                    Preserves E, HL, IX, IY, alternate registers and IFF.
 ;                    No stack use beyond the caller's return address.
-;                    TX ready on the first sample: 150 T-states, entry to RET.
+;                    TX ready on the first sample: 147 T-states, entry to RET.
 ;                    Checks uart_tx_failed once: any nonzero value rejects
 ;                    without I/O or invoking uart_tx_fail again.
 ;                    After 256 busy samples, tail-jumps to uart_tx_fail.
@@ -98,12 +100,21 @@ uart_read:
     in a, (c)                   ; IN, OUT, INC and DEC keep CF
     ret
 
+uart_write_send:
+    dec b
+    ld a, UART_DATA_REG
+    out (c), a
+    inc b
+    out (c), l
+    or a                        ; CF=0
+    ret
+
 uart_write_fast:
     ld a, (uart_tx_failed)
     or a
     scf
     ret nz                      ; preserve pending=1 and already-reported=2
-    ld d, 0                     ; 256 samples: over four byte times at 28 MHz
+    ld d, a                     ; 0: 256 samples, over four byte times at 28 MHz
     ld bc, ZXUNO_ADDR
     ld a, UART_STAT_REG
     out (c), a
@@ -115,11 +126,3 @@ uart_write_wait:
     dec d
     jr nz, uart_write_wait
     jp uart_tx_fail             ; first timeout only; consumer owns its effects
-uart_write_send:
-    dec b
-    ld a, UART_DATA_REG
-    out (c), a
-    inc b
-    out (c), l
-    or a                        ; CF=0
-    ret
