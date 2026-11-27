@@ -156,7 +156,7 @@ the complete summary remain in `work/next-batch-run-02`.
 
 Software validation comprises 17 CPU/protocol regressions, 31 host regressions,
 an independent repair review, and the final modular-selection test with both
-assemblers and separate-object linking. The integration selection is
-[`examples/next_flow_uart.inc`](../examples/next_flow_uart.inc): 367 code/read-only
+assemblers and separate-object linking. At the time of the hardware run,
+[the integration selection](../examples/next_flow_uart.inc) used 367 code/read-only
 bytes plus two caller-allocated state bytes. This closes the requested Next
 library validation and integration; application migration remains separate.

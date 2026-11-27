@@ -12,14 +12,14 @@ from test_next import FRAMING, NextUart
 from ay_model import AyUart
 
 BSS = 0xC000
-CORE = {"divmmc": 78, "next": 185, "ay": 326}
-COMPLETE = {"divmmc": 158, "next": 322, "ay": 399}
-ALL = {"divmmc": 180, "next": 624, "ay": 771}
+CORE = {"divmmc": 78, "next": 185, "ay": 332}
+COMPLETE = {"divmmc": 158, "next": 331, "ay": 434}
+ALL = {"divmmc": 180, "next": 635, "ay": 806}
 STATE = {"divmmc": 1, "next": 2, "ay": 3}
 LEAVES = {
     "divmmc": {"ready": 12, "flush": 12, "read_block": 56},
-    "next": {"ready": 19, "flush": 42, "read_block": 45, "reset": 23,
-             "esp_reset": 31, "baud_9600": 16, "try_write": 28, "flush_budget": 49,
+    "next": {"ready": 19, "flush": 51, "read_block": 45, "reset": 23,
+             "esp_reset": 31, "baud_9600": 16, "try_write": 28, "flush_budget": 51,
              "tx_idle": 13, "baud_khz": 32, "flow": 32},
     "ay": {"ready": 10, "flush": 38, "read_block": 11},
 }
@@ -75,7 +75,7 @@ class Modularity(unittest.TestCase):
 
     def test_next_flow_selection_example(self):
         parts = ((ROOT / "examples" / "next_flow_uart.inc").as_posix(),)
-        self.check_configuration("next", parts, 355)
+        self.check_configuration("next", parts, 357)
 
     def test_minimal_and_complete_assemble_and_link(self):
         for backend in CORE:
@@ -116,7 +116,7 @@ class Modularity(unittest.TestCase):
         for leaf, cost in (("string", 10), ("block", 12)):
             with self.subTest(send=leaf):
                 self.check_configuration("divmmc", ("divmmc_core.inc", "send_" + leaf + ".inc"), CORE["divmmc"] + cost)
-        self.check_configuration("ay", ("ay_init_keep_mixer.inc", "ay_core.inc"), CORE["ay"] + 14)
+        self.check_configuration("ay", ("ay_init_keep_mixer.inc", "ay_core.inc"), CORE["ay"] + 43)
         # The fast sender does not pull in the generic block/string sender.
         self.check_configuration("next", ("next_core.inc", "next_write_block.inc"), CORE["next"] + 46)
 

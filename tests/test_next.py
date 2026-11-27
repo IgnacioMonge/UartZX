@@ -149,6 +149,24 @@ class NoUart:
         pass
 
 
+class FlushStatusUart(NextUart):
+    """Inject new RX status events at deterministic purge sample numbers."""
+
+    def __init__(self, status_at):
+        super().__init__()
+        self.status_at = status_at
+        self.samples = 0
+
+    def inp(self, port):
+        event = 0
+        if port == 0x133B:
+            self.samples += 1
+            event = self.status_at(self.samples)
+            if event & 1:
+                self.feed(b"X")
+        return super().inp(port) | (event & 0xC4)
+
+
 class Next(unittest.TestCase):
     def setUp(self):
         self.uart = NextUart()
@@ -399,12 +417,15 @@ class Next(unittest.TestCase):
 
     def test_flush_that_gives_up_refuses_reads(self):
         d = self.d
+        # Only the first status read sees framing. Later clean bytes exhaust
+        # the discard limit, and the failed flush must still report both bits.
+        self.uart.feed([None])
         self.uart.feed(bytes(600))  # overflows, and no read has seen it
         self.uart.feed(bytes(5000), spacing=BYTE)
         self.assertEqual(self.errors(), 0)
         d.call("uart_flush")
         self.assertTrue(d.carry, "it gave up")
-        self.assertEqual(self.errors(), OVERFLOW)
+        self.assertEqual(self.errors(), FRAMING | OVERFLOW)
         d.call("uart_read")
         self.assertFalse(d.carry)  # not the tail of a burst it cut
         d.call("uart_flush")
@@ -418,6 +439,72 @@ class Next(unittest.TestCase):
         self.uart.feed(b"K")
         d.call("uart_read")
         self.assertEqual((d.carry, d.m.a), (True, ord("K")))
+
+    def test_flush_requires_clean_samples_after_a_late_rx_error(self):
+        for routine in ("uart_flush", "uart_flush_budget"):
+            for error in (OVERFLOW, FRAMING, OVERFLOW | FRAMING):
+                for ready in (False, True):
+                    with self.subTest(routine=routine, error=error, ready=ready):
+                        uart = FlushStatusUart(
+                            lambda n: error | int(ready) if n == 2048 else 0)
+                        d = Driver(PARTS, uart)
+                        d.m.memory[d.symbols["uart_rx_errors"]] = OVERFLOW
+                        d.m.memory[d.symbols["uart_tx_failed"]] = 2
+                        d.m.iff1 = d.m.iff2 = ready
+                        d.call(routine, de=4096, hl=0x4321, ix=0x1234, iy=0x5678)
+                        self.assertEqual((d.carry, uart.samples, d.io),
+                                         (False, 4096, 4096 + int(ready)))
+                        self.assertEqual((d.byte("uart_rx_errors"),
+                                          d.byte("uart_tx_failed")), (0, 2))
+                        self.assertEqual((d.m.hl, d.m.ix, d.m.iy, d.m.sp,
+                                          d.m.iff1, d.m.iff2),
+                                         (0x4321, 0x1234, 0x5678, 0xFF02, ready, ready))
+                        self.assertEqual((list(uart.fifo), uart.errors), ([], []))
+
+    def test_flush_error_activity_is_bounded_and_keeps_diagnostics(self):
+        for routine in ("uart_flush", "uart_flush_budget"):
+            for error in (FRAMING, FRAMING | OVERFLOW):
+                for ready in (False, True):
+                    with self.subTest(routine=routine, error=error, ready=ready):
+                        # A sample with both a new error and a byte counts only once.
+                        uart = FlushStatusUart(
+                            lambda n: error | (int(ready) if n % 2 else 0))
+                        d = Driver(PARTS, uart)
+                        d.call(routine, de=4097, hl=0x4321)
+                        self.assertEqual((d.carry, uart.samples, d.io,
+                                          self.errors(d), d.m.hl),
+                                         (True, 4097, 4097 + 2049 * int(ready),
+                                          FRAMING | OVERFLOW, 0x4321))
+                        d.io = 0
+                        d.call("uart_read")
+                        self.assertEqual((d.carry, d.io), (False, 0))
+                        uart.status_at = lambda n: 0
+                        d.call(routine, de=2048)
+                        self.assertEqual((d.carry, self.errors(d)), (False, 0))
+                        self.assertEqual((list(uart.fifo), uart.errors), ([], []))
+
+    def test_flush_zero_budget_counts_errors_and_allows_the_last_clean_sample(self):
+        for last_error in (65536 - 2048, 65536):
+            with self.subTest(last_error=last_error):
+                uart = FlushStatusUart(
+                    lambda n: FRAMING if n % 2048 == 0 and n <= last_error else 0)
+                d = Driver(PARTS, uart)
+                d.call("uart_flush_budget", de=0)
+                self.assertEqual((uart.samples, d.io), (65536, 65536))
+                self.assertEqual((d.carry, self.errors(d)),
+                                 (False, 0) if last_error < 65536
+                                 else (True, FRAMING | OVERFLOW))
+                self.assertEqual(uart.errors, [])
+
+    def test_flush_ignores_the_break_level(self):
+        for routine in ("uart_flush", "uart_flush_budget"):
+            with self.subTest(routine=routine):
+                uart = FlushStatusUart(lambda n: 0x80)
+                d = Driver(PARTS, uart)
+                d.call(routine, de=2048)
+                self.assertEqual((d.carry, uart.samples, self.errors(d)),
+                                 (False, 2048, 0))
+                self.assertEqual(uart.errors, [])
 
     def test_write(self):
         d = self.d
@@ -462,16 +549,16 @@ class Next(unittest.TestCase):
                 self.assertEqual(uart.errors, [])
 
     def test_flush_budget_boundaries_and_error_capture(self):
-        for budget in (1, 2047, 2048, 4096):
+        for budget in (1, 2047, 2048, 2049, 4096):
             with self.subTest(budget=budget):
                 uart = NextUart()
                 d = Driver(PARTS, uart)
                 uart.feed([None])
                 d.io = 0
                 d.call("uart_flush_budget", de=budget)
-                self.assertEqual(d.io, min(budget, 2048))
+                self.assertEqual(d.io, min(budget, 2049))
                 self.assertEqual((d.carry, d.byte("uart_rx_errors")),
-                                 (True, FRAMING | OVERFLOW) if budget < 2048 else (False, 0))
+                                 (True, FRAMING | OVERFLOW) if budget < 2049 else (False, 0))
                 self.assertEqual(uart.errors, [])
 
         class Continuous(NextUart):

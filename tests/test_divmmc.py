@@ -62,13 +62,23 @@ class ZxUnoUart:
 
 
 class NoUart:
-    """Nothing on the bus: every read floats high."""
+    """An unattached port that always reads high."""
 
     def inp(self, port):
         return 0xFF
 
     def out(self, port, value):
         pass
+
+
+class FloatingBus48K(NoUart):
+    """Unattached port on a 48K with zero bitmap and attribute bytes."""
+
+    def inp(self, port):
+        line, phase = divmod((self.clock() - 14338) % Driver.FRAME, 224)
+        if line < 192 and phase < 128 and phase % 8 < 4:
+            return 0x00  # one of the ULA's four display fetches
+        return 0xFF
 
 
 class Divmmc(unittest.TestCase):
@@ -130,7 +140,7 @@ class Divmmc(unittest.TestCase):
         d.call("uart_read")
         self.assertEqual((d.carry, d.m.a), (True, ord("K")))
 
-    def test_write_fails_closed_without_uart(self):
+    def test_write_fails_closed_on_a_high_bus(self):
         d = Driver(PARTS, NoUart())
         took = d.call("uart_write", a=0x55, bc=0x1111, de=0x2222, hl=0x3333)
         self.assertTrue(d.carry)
@@ -145,6 +155,12 @@ class Divmmc(unittest.TestCase):
         self.assertEqual(d.io, 0, "a latched driver must not touch the ports")
         d.call("uart_init")
         self.assertFalse(d.byte("uart_tx_failed"))
+
+    def test_open_48k_bus_can_report_a_successful_write(self):
+        d = Driver(PARTS, FloatingBus48K())
+        d.elapsed = 14338  # active display
+        d.call("uart_write", a=0x55)
+        self.assertEqual((d.carry, d.byte("uart_tx_failed")), (False, 0))
 
     def test_flush_crosses_gaps(self):
         d = self.d

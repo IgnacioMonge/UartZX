@@ -71,6 +71,71 @@ class Ay(unittest.TestCase):
         self.assertTrue(d.m.iff1)
         self.assertLess(took, 200)
 
+    def test_init_preloads_idle_before_enabling_output(self):
+        d = self.d
+        preserved = dict(
+            de=0x1234,
+            hl=0x5678,
+            ix=0x2345,
+            iy=0x6789,
+            alt_af=0x1357,
+            alt_bc=0x2468,
+            alt_de=0x3579,
+            alt_hl=0x468A,
+        )
+        for routine, mixer, interrupts in product(
+            ("uart_init", "uart_init_keep_mixer"),
+            (0, 0x38, 0x80, 0xBF),
+            (False, True),
+        ):
+            with self.subTest(routine=routine, mixer=mixer, interrupts=interrupts):
+                uart = AyUart()
+                uart.clock = d.clock
+                uart.interrupts = lambda: d.m.iff1
+                d.device = uart
+                uart.regs[7] = mixer  # port A input, with a stale low latch
+                uart.regs[14] = 0
+                uart.feed(b"Q")  # must wait for a read, never start during init
+                d.m.memory[d.symbols["uart_second_avail"]] = 1
+                d.m.memory[d.symbols["uart_rx_errors"]] = 0xC0
+                d.m.iff1 = d.m.iff2 = interrupts
+                took = d.call(routine, **preserved)
+                activity = (
+                    uart.cts_falls,
+                    {level for _, level in uart.tx},
+                    list(uart.frames),
+                )
+                self.assertEqual(
+                    {name: getattr(d.m, name) for name in preserved}, preserved
+                )
+                self.assertEqual(
+                    (uart.regs[7], uart.regs[14]),
+                    (0xFC if routine == "uart_init" else mixer | 0x40, IDLE),
+                )
+                self.assertEqual(
+                    (d.byte("uart_second_avail"), d.byte("uart_rx_errors")), (0, 0)
+                )
+                self.assertTrue(d.m.iff1)
+                self.assertLess(took, 200)
+                self.assertEqual((self.read(), activity), (ord("Q"), (0, {1}, [])))
+                self.assertEqual(uart.errors, [])
+
+    def test_init_leaves_port_a_selected_for_direct_io(self):
+        for routine in ("uart_init", "uart_init_keep_mixer"):
+            with self.subTest(routine=routine):
+                uart = AyUart()
+                d = Driver(PARTS, uart)
+                uart.regs[7] = 0x38
+                uart.feed(b"Q")  # queued before init, with port A still an input
+                d.call(routine)
+                self.assertEqual((uart.reg, uart.inp(0xFFFD)), (14, IDLE))
+                mixer = uart.regs[7]
+                uart.out(0xBFFD, IDLE ^ 1)  # consumer writes without selecting R14
+                self.assertEqual((uart.regs[7], uart.regs[14]), (mixer, IDLE ^ 1))
+                self.assertEqual((uart.cts_falls, uart.frames), (0, []))
+                d.call("uart_read")
+                self.assertEqual((d.carry, d.m.a), (True, ord("Q")))
+
     def test_model_port_direction_controls_pins_not_the_latch(self):
         uart = AyUart()
         now = 0
@@ -264,6 +329,40 @@ class Ay(unittest.TestCase):
                 self.assertEqual(d.byte("uart_rx_errors"), FRAMING)
                 self.assertIsNone(self.read())
 
+    def test_raw_bad_stop_accumulates_errors_and_keeps_guarded_reads_gated(self):
+        d = self.d
+        for second, clock, errors in product(
+            (False, True),
+            (T_3_5, T_128),
+            (0x80, 0x81, 0xC0),
+        ):
+            with self.subTest(second=second, clock=clock, errors=errors):
+                uart = self.esp(bit=clock, flow=not second)
+                uart.feed(
+                    [0x41, 0xA5 | BAD_STOP] if second else [0x41 | BAD_STOP],
+                    delay=500 if second else 0,
+                )
+                d.m.memory[d.symbols["uart_rx_errors"]] = errors
+                d.call("uart_read_raw", de=0x1234, hl=0x5678)
+                self.assertEqual(
+                    (d.carry, d.m.a if d.carry else None),
+                    (second, 0x41 if second else None),
+                )
+                self.assertEqual(d.byte("uart_rx_errors"), errors | FRAMING)
+                self.assertEqual(
+                    (d.m.de, d.m.hl, uart.regs[14]), (0x1234, 0x5678, IDLE)
+                )
+                self.assertEqual(d.byte("uart_second_avail"), 0)
+                self.assertTrue(d.m.iff1)
+                uart.feed(b"K")
+                d.io = 0
+                self.assertIsNone(self.read())
+                d.call("uart_ready")
+                self.assertFalse(d.carry)
+                d.call("uart_read_block", hl=BUFFER, b=1)
+                self.assertEqual((d.carry, d.m.hl, d.m.d, d.io), (False, BUFFER, 1, 0))
+                self.assertEqual(d.byte("uart_rx_errors"), errors | FRAMING)
+
     def test_flush_discards_damaged_bytes(self):
         d = self.d
         uart = self.esp()
@@ -328,6 +427,8 @@ class Ay(unittest.TestCase):
         self.assertTrue(d.carry, "it gave up")
         self.assertEqual(d.byte("uart_second_avail"), 0, "nothing kept from before")
         self.assertEqual(d.byte("uart_rx_errors"), 0x80, "recovery is pending")
+        d.call("uart_read_raw")  # another bad stop on the same stuck line
+        self.assertEqual((d.carry, d.byte("uart_rx_errors")), (False, 0x80 | FRAMING))
         uart.stuck_low = False
         uart.feed(b"stale")
         d.io = 0

@@ -60,17 +60,18 @@ apart from clock wiring.
   start.
 - **A data write while TX is busy is dropped** without any indication.
 - **TX has no flow control input.** Busy lasts one byte (304 T-states at
-  3.5 MHz). A longer wait means there is no UART: a floating bus reads `#FF`,
-  busy for ever.
+  3.5 MHz). The write fails if every sample through the timeout reports busy.
 - **The baud rate is not programmable.** It is a parameter of the ZX-Uno
   core (115200); the driver has nothing to set.
 
 The decode still declares an unused `leyendo_estado` register, which suggests
 older cores reacted to a status read; those cores are not supported.
 
-A missing UART cannot be told from the receive side: a floating bus that reads
-`#FF` has RX-ready set, so `uart_ready` and `uart_read` report bytes for ever.
-The "no UART" verdict is a failed `uart_write`; drain loops must be bounded.
+On an unattached port, `#FF` sets both TX-busy and RX-ready. The Spectrum
+48K can also expose screen data during ULA fetches. A screen byte with bit 6
+clear lets a write return success. Applications detecting an ESP must bound
+their receive loop and check a complete protocol reply. The README example
+sends `AT` and checks for an `OK` line. [48K floating-bus measurements](https://k1.spdns.de/Develop/Projects/zxsp/Info/Floating%20bus%20technical%20guide.html)
 
 ### Feature ledger
 
@@ -81,7 +82,7 @@ The "no UART" verdict is a failed `uart_write`; drain loops must be bounded.
 | One-byte RX cache: peek with value, stash before a TX wait | BridgeZXadv, NetManZX | Dropped | The receiver already holds the byte; the cache costs 29 T on every read |
 | RX moved into a ring while TX waits | BitStream | Dropped | TX waits one byte at most and the receiver holds its byte meanwhile; the driver owns no ring |
 | Ready without consuming, status only | NetChessZX, BitStream | Taken | |
-| Bounded TX wait | all | Taken, 256 samples | Over four byte times even at 28 MHz. Longer budgets (4096 in NetManZX, 16384 in BitStream) only delay the "no UART" verdict |
+| Bounded TX wait | all | Taken, 256 samples | Over four byte times even at 28 MHz. Longer budgets (4096 in NetManZX, 16384 in BitStream) delay a busy timeout |
 | TX failure latch until re-init | SpecTalkZX, BitStream, NetManZX (`io_error`) | Taken | One gate before I/O; first timeout tail-jumps to the assembly-time destination. Default latches 1; application may own immediate effects. States 1/2 never repeat effects |
 | Caller retries after a TX timeout | NetChessZX (C layer) | Dropped | On this hardware a timeout is not transient |
 | Write preserves A, BC, DE, HL | NetManZX, BridgeZXadv (BC, DE) | Compatible A adapter | Optional 12 B wrapper around one L-input algorithm. Fast entry preserves E/HL for real Classic inline callers and avoids saves |
@@ -186,7 +187,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | DI/EI around the NextReg select and read | BridgeZXadv, NetChessZX, NetManZX | Replaced | `uart_set_baud` reads the selection back and retries, so it never forces interrupts on |
 | Drain inside init | BridgeZXadv, SpecTalkZX | Dropped | The frame reset empties the FIFOs |
 | Flush | BridgeZXadv (to first empty poll), SpecTalkZX (512 reads; or to empty, 1024 at most) | Taken as a quiet-window flush | At 28 MHz the FIFO looks empty after every byte; a count can end with bytes left when the FIFO was full |
-| Flush that gives up says so | none | Added | When `UART_FLUSH_MAX` bytes go by and more keep coming it returns CF=1 and latches `UART_RX_OVERFLOW`, whatever the latch held: reads stay refused until a flush completes, so a caller that ignores CF is not handed the tail of a burst the flush cut. Found by external audits |
+| Flush that gives up says so | none | Added | The first sample beyond `UART_FLUSH_MAX` with a byte or a new RX error returns CF=1. The driver retains the observed error bits, sets `UART_RX_OVERFLOW` and keeps reads gated until recovery |
 | Fast bulk receive | BitStream (drain into its ring), BridgeZXadv (loop inlined in the application) | Taken as `uart_read_block` | Ring-agnostic; new code |
 | ESP reset pulse, 25 frames | BridgeZXadv, NetChessZX, NetManZX | Taken | The boot wait and whatever follows stay with the caller |
 | `IM 1` before the reset wait | NetChessZX | Left to the application | Specific to its C runtime |
@@ -206,9 +207,9 @@ a Next adds at 28 MHz.
 |---|---|---|---|---|
 | Read, nothing pending | 80 (58 raw) | 117 | 80 | 99 |
 | Read, byte returned | 100 (78 raw) | not counted | not counted | not counted |
-| Size | 324 bytes | 360 bytes | 239 bytes | 267 bytes |
+| Size | 333 bytes | 360 bytes | 239 bytes | 267 bytes |
 
-- The 324 bytes include the 115200 table, interrupt-state-preserving reset
+- The 333 bytes include the 115200 table, interrupt-state-preserving reset
   controls and two state bytes; the duplex core alone is 187 bytes including
   state. The pre-modularity total was 331 bytes.
   Each further rate adds 16. The 360 of BridgeZXadv include three tables.
@@ -290,9 +291,9 @@ the three drivers agree on and from the AY-3-8912 register set.
   port. A frame interrupt that falls inside one is lost.
 - **`uart_write`** always returns CF=0 and there is no `uart_tx_failed`: the
   port has no status. `uart_rx_errors` holds `UART_RX_FRAMING` (`0x40`) for
-  a stop bit read low, or `UART_RX_RECOVERY` (`0x80`) after an incomplete
-  flush. Recovery is not a synthetic framing error: a clean stream that
-  exceeds the discard budget also needs a later completed flush or init.
+  a stop bit read low and `UART_RX_RECOVERY` (`0x80`) after an incomplete
+  flush. A raw read with a framing error sets bit 6 and preserves bit 7.
+  Either bit gates ordinary reads until a completed flush or init.
 - **`uart_read_block` and `uart_flush`** end with a 3.9 ms timeout instead of
   returning at once.
 - **Placement.** The code and the stack must be in uncontended memory:
@@ -349,7 +350,7 @@ T-states measured by the tests on the Python `z80` emulator.
 
 | | Canonical | Copied NetManZX driver |
 |---|---|---|
-| Size | 402 bytes, plus 350 for `ay_speed.inc` | 656 bytes |
+| Size (including state) | 437 bytes, plus 350 for `ay_speed.inc` | 656 bytes |
 | TX bit | 370 | 370 |
 | `uart_write` | 4227 | not measured |
 | `uart_read`, byte | 5483 | not measured |

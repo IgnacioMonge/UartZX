@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from harness import ORG, ROOT, Driver, assemble, sjasmplus, z80asm
-from test_divmmc import ZxUnoUart
+from test_divmmc import FloatingBus48K, NoUart, ZxUnoUart
 from test_next import FRAMING, NextUart
 from ay_model import AyUart
 
@@ -63,7 +63,7 @@ class Readme(unittest.TestCase):
                 self.assertEqual(uart.errors, [])
 
     def test_minimal_examples(self):
-        for backend, block, size in zip(("divmmc", "next", "ay"), examples()[2:], (79, 187, 329)):
+        for backend, block, size in zip(("divmmc", "next", "ay"), examples()[2:], (79, 187, 335)):
             with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:
                 tmp = Path(tmp)
                 path = tmp / "minimal.inc"
@@ -73,23 +73,38 @@ class Readme(unittest.TestCase):
                 self.assertEqual(image, z80asm(tmp, "z80", [path.as_posix()]))
         self.assertEqual(len(examples()), 5)
 
-    def run_example(self, answer):
+    def run_example(self, uart, start_tick=0):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "example.asm"
             path.write_text(examples()[0])
-            uart = Esp()
-            uart.answer = answer
             d = Driver((path,), uart)
-        took = d.call("start")
-        self.assertEqual((uart.sent, uart.errors), (b"AT\r\n", []))
-        return took, d
+        d.elapsed = start_tick
+        self.assertLess(d.call("start"), 4_000_000)  # bounded even with spurious input
+        return d
 
-    def test_example_ends_with_or_without_an_answer(self):
-        silent, _ = self.run_example(b"")
-        self.assertLess(silent, 100_000)
-        answered, d = self.run_example(b"OK\r\n")
-        self.assertLess(answered, silent)
-        self.assertEqual((d.carry, d.m.a), (True, ord("O")))
+    def test_example_confirms_only_a_complete_ok_line(self):
+        for answer, present in (
+            (b"", False),
+            (b"O", False),
+            (b"OK\r", False),
+            (b"NOT OK\r\n", False),
+            (b"ERROR\r\n", False),
+            (b"OK\r\n", True),
+            (b"AT\r\r\n\r\nOK\r\n", True),
+        ):
+            with self.subTest(answer=answer):
+                uart = Esp()
+                uart.answer = answer
+                d = self.run_example(uart)
+                self.assertEqual((uart.sent, uart.errors), (b"AT\r\n", []))
+                self.assertEqual(d.carry, present)
+
+    def test_example_rejects_display_bytes_on_an_open_48k_bus(self):
+        d = self.run_example(FloatingBus48K(), start_tick=14338)
+        self.assertEqual(d.byte("Uart.uart_tx_failed"), 0)  # apparent TX success
+        self.assertFalse(d.carry)
+        d = self.run_example(NoUart())
+        self.assertEqual((d.carry, d.byte("Uart.uart_tx_failed")), (False, 1))
 
     def test_z88dk_example_links_code_and_state_apart(self):
         layout = ["    SECTION code_user", f"    ORG {ORG}"]

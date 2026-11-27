@@ -21,12 +21,12 @@
 ;     nothing is lost however slowly the driver reads.
 ;   - A data write while TX is busy is dropped: every write here follows a
 ;     fresh not-busy sample.
-;   - TX has no flow control input: busy lasts one byte. A TX timeout means
-;     there is no UART (a floating bus reads 0xFF: busy for ever).
-;   - The receive side cannot tell a missing UART: 0xFF also has the RX-ready
-;     bit set, so uart_ready and uart_read report bytes of 0xFF for ever and
-;     uart_read_block fills its buffer. Send before trusting what is read (a
-;     failed uart_write is the "no UART" verdict) and bound every drain loop.
+;   - TX has no flow control input: busy lasts one byte. A port reading 0xFF
+;     continuously makes TX time out and RX report an endless stream of 0xFF.
+;     An unattached port on a 48K can also return screen data during display
+;     fetches, so even a successful write is possible with no UART present.
+;     Bound each receive loop. Confirm the expected protocol reply in the
+;     application when detecting the ESP.
 ;
 ; No routine uses DI, EI, HALT, IX, IY or the alternate registers.
 ;

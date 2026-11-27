@@ -8,7 +8,7 @@ uart_second_avail:
     defb 0
 uart_second_byte:
     defb 0
-; UART_RX_FRAMING after a stop bit read low; UART_RX_RECOVERY after an
-; incomplete flush. Cleared by a completed uart_flush or uart_init.
+; Bit mask: UART_RX_FRAMING after a bad stop bit, UART_RX_RECOVERY after an
+; incomplete flush. A raw read can set both. Cleared by a completed flush or init.
 uart_rx_errors:
     defb 0

@@ -4,13 +4,13 @@
 uart_flush:
     push hl
     ld bc, UART_TX
-    ld hl, UART_FLUSH_MAX + 1   ; the extra byte tells whether more is coming
+    ld hl, UART_FLUSH_MAX + 1   ; bound samples with a byte or a new RX error
 uart_flush_quiet:
     ld de, UART_FLUSH_QUIET
 uart_flush_poll:
-    in a, (c)                   ; clears the hardware error bits as it goes
-    rrca
-    jr c, uart_flush_byte
+    in a, (c)                   ; a status read clears hardware error bits
+    and UART_ERROR_MASK + UART_RX_READY
+    jr nz, uart_flush_active
     dec de
     ld a, d
     or e
@@ -19,10 +19,15 @@ uart_flush_done:
     ld (uart_rx_errors), a      ; A = 0 and CF=0 from the count that ran out
     pop hl
     ret
-uart_flush_byte:
+uart_flush_active:
+    cp UART_RX_OVERFLOW
+    call nc, uart_latch_rx_error
+    rrca
+    jr nc, uart_flush_count      ; an error without a byte is still activity
     inc b
     in a, (c)                   ; discard
     dec b
+uart_flush_count:
     dec hl
     ld a, h
     or l

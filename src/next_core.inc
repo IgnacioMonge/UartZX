@@ -50,10 +50,11 @@
 ;                    full for UART_TX_POLLS samples, or an earlier write
 ;                    failed. The failure latches (uart_tx_failed) until
 ;                    uart_init. Preserves A, BC, DE, HL.
-;   uart_flush       Discard input until the line has been quiet for
-;                    UART_FLUSH_QUIET samples, then clear uart_rx_errors and
-;                    return CF=0. CF=1 when UART_FLUSH_MAX bytes went by and
-;                    more keep coming: UART_RX_OVERFLOW is latched, so reads
+;   uart_flush       Discard input until UART_FLUSH_QUIET consecutive samples
+;                    show no byte and no new RX error, then clear the error
+;                    latch and return CF=0. BREAK alone is a line level.
+;                    CF=1 on UART_FLUSH_MAX + 1 samples with bytes or errors:
+;                    UART_RX_OVERFLOW is latched, so reads
 ;                    stay refused until a later flush completes.
 ;                    Destroys A, BC, DE.
 ;   uart_read_block  HL = buffer, B = room (1..255, 0 = 256). Stores bytes
@@ -103,10 +104,10 @@ NEXTREG_VIDEO_TIMING EQU 0x11
 ; Samples of a full TX FIFO before uart_write gives up: over ten byte times
 ; at 9600 baud and 28 MHz.
 UART_TX_POLLS       EQU 4096
-; uart_flush ends after this many samples in a row without a byte: 3.6 ms at
-; 28 MHz, 29 ms at 3.5 MHz.
+; uart_flush ends after this many clean empty samples in a row: 3.8 ms at
+; 28 MHz, 30 ms at 3.5 MHz, without physical waits or interrupt handlers.
 UART_FLUSH_QUIET    EQU 2048
-UART_FLUSH_MAX      EQU 4096    ; bytes discarded before uart_flush gives up
+UART_FLUSH_MAX      EQU 4096    ; active samples allowed before one more gives up
 ; uart_read_block gives up after this many samples without a byte: over two
 ; byte times at 115200 baud and 28 MHz.
 UART_IDLE_POLLS     EQU 96

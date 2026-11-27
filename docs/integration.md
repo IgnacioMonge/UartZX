@@ -146,7 +146,7 @@ divMMC core. Use consumer-owned SECTION/PUBLIC/EXTERN declarations; shared
 source leaves contain none. Keep one symbol scope per driver and keep code
 and state resident and mapped while called. State must be writable RAM and
 initialized on cold start or through `uart_init`; AY cache bytes stay adjacent.
-Put `ay_init_keep_mixer.inc` immediately before `ay_core.inc` for its short jump.
+Both AY initializers leave R14 selected for direct port A access.
 
 No core uses IX or IY. divMMC and Next preserve IFF; AY timed I/O returns with
 interrupts enabled and still needs uncontended code/stack. Drivers are not
@@ -195,7 +195,8 @@ by the link test. sjasmplus can use the same example in a single scope.
 
 The example retains **ten frame waits and 512 bounded startup reads**, plus
 the core's guarded initial stale-byte read. The total is 523 status queries;
-an absent UART causes exactly 523 bounded data reads. `_frame_wait` retains
+an unattached port returning a constant `0xFF` causes 523 data reads.
+On a 48K floating bus, RX-ready varies with the display. `_frame_wait` retains
 ownership of IY, interrupts and overlay handling. Deliberate init clears the
 shared latch; it must accompany the application's existing recovery sequence,
 never an automatic retry of a partly sent command.
@@ -276,27 +277,30 @@ and retry/resynchronize later. Preserve failure state until a clean boundary;
 do not deliver the remaining tail as an intact response.
 
 There is no need to link or call `uart_flush` in this critical path. It is an
-optional explicit discard policy: on Next it waits for a quiet window and
-may give up with reads still gated. `uart_init` is not a substitute for RX
+optional explicit discard policy. On Next, 2048 consecutive samples must
+show an empty FIFO and no new framing or overflow error. A byte, an error,
+or both in one sample restart the window and count once toward the limit.
+The 4097th such sample ends the flush with reads still gated. Both routines
+ignore the persistent BREAK level when counting clean samples.
+`uart_init` is not a substitute for RX
 recovery either: it also clears fail-stop, resets TX FIFO and resets baud.
 
 For a caller that wants the driver's quiet-window policy with bounded total
 work, select `next_flush_budget.inc` after `next_core.inc` (or `next.inc`).
 `uart_flush_budget` takes DE = total status samples, 1..65535, with 0 meaning
-65536. Every poll counts, whether empty or carrying a byte; incoming data
-restarts only the `UART_FLUSH_QUIET` consecutive-empty window. Use a budget
+65536. Every poll counts. A byte or a new RX error restarts only the
+`UART_FLUSH_QUIET` window. Use a budget
 at least that large (2048) to allow success. For example, DE=4096 limits one
 call to 4096 status reads, even with one byte near the end of every quiet
 window. Smaller budgets always fail to establish silence. This is a work
-bound, not a wall-clock deadline: interrupts, contention and wait states
-still add time. The original `uart_flush` retains its existing behavior.
+bound. Interrupts, contention and wait states add elapsed time.
 
 CF=0 means the quiet window completed and `uart_rx_errors` is clear. CF=1
-means recovery remains incomplete: `UART_RX_OVERFLOW` is latched, including
-any hardware errors observed along the way, and guarded RX stays blocked.
+means recovery remains incomplete. Both flush routines retain the observed
+RX error bits and set `UART_RX_OVERFLOW`. Guarded RX stays blocked.
 Handle UI/deadlines between calls; finish a later flush before reopening the
 stream. No quiet-window progress is retained between calls. The routine
-destroys A/BC/DE, preserves HL and IFF, adds 49 code bytes and no state.
+destroys A/BC/DE, preserves HL and IFF, adds 51 code bytes and no state.
 
 Do not blindly alias `uart_rx_errors` to `_next_uart_gap`. They currently
 have different representations and lifetimes: a hardware bitmap versus a
@@ -468,7 +472,7 @@ the diagnostic NEX supplies a hardware-validation caller. See the
 [`examples/next_flow_uart.inc`](../examples/next_flow_uart.inc) supplies that
 selection as one include: core, immediate TX, budgeted recovery, wire-idle query,
 flow controls, effective-rate metadata and the 2000000 divisor table. It emits
-355 code/read-only bytes; allocate `next_vars.inc` separately in writable RAM
+357 code/read-only bytes; allocate `next_vars.inc` separately in writable RAM
 (two bytes). The example adds no entry points or state of its own. Its regression
 assembles identical bytes with sjasmplus/z88dk and links code and state in
 separate objects. Flow remains opt-in after board/ESP negotiation.
@@ -488,8 +492,9 @@ each call and own the overall receive deadline, parsing and recovery.
 | AY | Call read even when `uart_ready` reports CF=0: ready sees only the cached second byte and never opens CTS. A read may wait about 3.9 ms with interrupts off and returns with them enabled. Music must keep R7 bit 6 set. |
 
 On AY, an incomplete flush sets `UART_RX_RECOVERY=0x80`; a bad stop bit sets
-`UART_RX_FRAMING=0x40`. Test for nonzero to gate the stream, and retry flush
-or explicitly reinitialize before resuming. A completed flush clears both.
+`UART_RX_FRAMING=0x40`. A raw read can leave both bits set (`0xC0`).
+Test for nonzero to gate the stream. A completed flush or reinitialization
+clears both bits.
 Raw-read users still own error transfer and resynchronization. The example
 is assembled with both assemblers and run with each backend, including AY's
 ready=false before receiving the ESP's first byte and the differing IFF exits.
@@ -537,8 +542,9 @@ clock-timing sweep, is claimed. The hardware runs predate the 2026-11-22 size
 pass and were not repeated. Of the routines the probe uses, that pass changed
 the code of `uart_init`/`uart_set_baud` (divisor write), `uart_read` and
 `uart_read_raw` (the error exit), `uart_flush_budget`, `uart_try_write` and the
-flow controls; side-by-side runs of old and new code give the same port
-accesses in the same order, which is model evidence, not a hardware result.
+flow controls. Model comparisons between `c608493` and `79a94b1` found the same
+port accesses in the same order. The subsequent flush correction is covered by
+emulator regressions for errors on an empty FIFO and recovery at the sample limit.
 Consumer adoption is outside this library
 validation. AY's existing provenance/licence qualification in the README remains.
 [External comparisons](external-comparisons.md) distinguish

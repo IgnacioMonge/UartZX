@@ -38,7 +38,7 @@
 ;     as whole, and a line held low no longer reads as a run of 0x00 bytes.
 ;
 ;   uart_init        Port A as output, TX and CTS high, forget a kept byte,
-;                    clear uart_rx_errors.
+;                    clear uart_rx_errors. Leaves port A (R14) selected.
 ;                    It does not wait and sends nothing. It writes the whole
 ;                    mixer as UART_MIXER_VALUE. Destroys A, BC.
 ;   uart_init_keep_mixer  As uart_init, but it only sets mixer bit 6 (port
@@ -94,25 +94,9 @@ UART_RX_FRAMING     EQU 0x40    ; uart_rx_errors: a stop bit read low, as on the
 UART_RX_RECOVERY    EQU 0x80    ; uart_rx_errors: flush stopped before a quiet read
 
 uart_init:
-    ld bc, UART_AY_REGISTER
-    ld a, UART_AY_MIXER
-    di                          ; a handler must not split select and data
-    out (c), a
+    include "ay_init_ports.inc"
     ld a, UART_MIXER_VALUE
-uart_init_mixer:
-    ld b, 0xBF                  ; UART_AY_DATA
-    out (c), a
-    ld b, 0xFF
-    ld a, UART_AY_PORT_A
-    out (c), a
-    ld b, 0xBF
-    ld a, UART_LINE_IDLE        ; a known level, whatever the latch held
-    out (c), a
-    xor a
-    ld (uart_second_avail), a
-    ld (uart_rx_errors), a
-    ei
-    ret
+    include "ay_init_output.inc"
 
 uart_write:
     di                          ; a byte is timed as a whole
@@ -310,8 +294,8 @@ uart_read_bad_stop:
     xor a                       ; takes A = 0 and CF=0 from the stack instead
     push af
 uart_read_second_bad:           ; (the first byte is whole and is returned)
-    ld a, UART_RX_FRAMING
-    ld (uart_rx_errors), a
+    ld hl, uart_rx_errors
+    set 6, (hl)                 ; keep recovery pending after an incomplete flush
     jr uart_read_done
 
 uart_read_second_found:

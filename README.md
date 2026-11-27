@@ -9,8 +9,8 @@ backends, the same entry points on all of them.
 | Backend | Hardware | Minimal code | Compatible full code | State |
 |---|---|---:|---:|---:|
 | divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 78 B | 158 B | 1 B |
-| Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 185 B | 322 B | 2 B |
-| AY | Serial on AY-3-8912 port A, 9600 baud | 326 B | 399 B | 3 B |
+| Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 185 B | 331 B | 2 B |
+| AY | Serial on AY-3-8912 port A, 9600 baud | 332 B | 434 B | 3 B |
 
 Minimal means `src/<backend>_core.inc`; full means the existing
 `src/<backend>.inc`. Both need `src/<backend>_vars.inc` in RAM, or equivalent
@@ -43,11 +43,15 @@ handling, T-state costs) is in the header of its `_core.inc` file. Read it befor
 using a backend: they are not identical. In particular:
 
 - **divMMC / ZX-Uno:** the receiver holds one byte, so the ESP must use CTS
-  flow control (`AT+UART_CUR=115200,8,1,0,2`). A machine without the UART
-  reads as an endless stream of `#FF` bytes: send first, and bound every
-  receive loop.
+  flow control (`AT+UART_CUR=115200,8,1,0,2`). An unattached port on a
+  Spectrum 48K can return display bytes. Those bytes can make TX appear
+  ready and RX appear to have data. To confirm an ESP is responding, send
+  a command and require its complete reply within a bounded wait.
 - **Next:** receive errors (FIFO overflow, framing) stop `uart_read` until
   `uart_flush`, so a stream with a hole is never handed over as whole.
+  Both flush routines require 2048 consecutive samples with an empty RX FIFO
+  and no new framing or overflow error. A failed flush preserves the errors
+  it observed and sets the overflow bit to keep reception blocked.
   `uart_set_baud` and the optional tables change the rate; `uart_esp_reset`
   pulses the reset line of the ESP, which also resets the expansion bus.
   Optional `next_reset.inc` offers assert/release without HALT or boot waits,
@@ -62,7 +66,7 @@ using a backend: they are not identical. In particular:
   initialization still turns flow off.
   The [duplex flow selection](examples/next_flow_uart.inc) combines these
   optional controls with the core, recovery, TX idle and 2 Mbaud metadata/table:
-  355 code/read-only bytes plus the two separately allocated state bytes.
+  357 code/read-only bytes plus the two separately allocated state bytes.
   `uart_write_block` reads no input while it sends. With flow disabled, at the
   same rate both ways with both FIFOs initially empty, a send longer than 575 bytes can
   overflow the RX FIFO at 115200 baud, and a shorter one at faster rates
@@ -80,10 +84,13 @@ using a backend: they are not identical. In particular:
   A byte whose stop bit reads low stops reception until `uart_flush`, as a
   framing error does on the Next. `uart_init` rewrites the whole mixer
   register; `uart_init_keep_mixer` only makes port A an output, so music
-  keeps its tone and noise settings. The ESP must already run at 9600 baud
-  with CTS flow control.
+  keeps its tone and noise settings. Both preload TX and CTS high before
+  enabling the outputs, so a waiting ESP holds its first byte until a read.
+  Both return with port A (R14) selected for direct pin access.
+  The ESP must already run at 9600 baud with CTS flow control.
   An incomplete `uart_flush` latches `UART_RX_RECOVERY` (`0x80`) and refuses
-  normal reads until a flush completes or `uart_init` clears it.
+  normal reads until a flush completes or `uart_init` clears it. A later
+  framing error during `uart_read_raw` sets bit 6 as well (`0xC0`).
   `uart_esp_set_9600` (`src/ay_speed.inc`) sets that, **persistently**: it
   rewrites the ESP's stored configuration, which then applies to every other
   interface the module is plugged into.
@@ -128,7 +135,9 @@ add `-I UartZX/src` (or the absolute path to `src`) to the assembler command:
 nested includes are resolved through its include search path. sjasmplus
 resolves them relative to the including file. Keep the `src` directory intact.
 
-sjasmplus (wrap it in a module; labels become `Uart.uart_read` and so on):
+This sjasmplus example sends `AT` on an idle connection and returns CF=1
+after a complete `OK\r\n` line. An echo or a blank line can precede it.
+Choose the poll budget for the CPU speed and the ESP response deadline.
 
 ```asm
 start:
@@ -136,21 +145,38 @@ start:
     call Uart.uart_flush        ; drop whatever the ESP said while booting
     ld hl, command
     call Uart.uart_write_string
-    jr c, no_uart               ; divMMC and Next: the write timed out
-    ld b, 0                     ; bound every wait yourself
+    jr c, unconfirmed
+    ld hl, reply + 2            ; already at the start of a line
+    ld de, 16384                ; total polls, including those that find data
 wait:
-    push bc                     ; uart_read destroys BC
-    call Uart.uart_read         ; CF=1: A = byte
-    pop bc
-    jr c, got_byte
-    djnz wait
-no_uart:
+    call Uart.uart_read         ; preserves HL and DE
+    jr nc, next_poll
+    cp (hl)
+    jr z, matched
+    ld hl, reply                ; a new CR can start the next line boundary
+    cp (hl)
+    jr nz, next_poll
+matched:
+    inc hl
+    ld a, (hl)
+    or a
+    jr z, confirmed
+next_poll:
+    dec de
+    ld a, d
+    or e
+    jr nz, wait
+unconfirmed:
+    or a                        ; CF=0 on timeout or failed TX
     ret
-got_byte:
+confirmed:
+    scf
     ret
 
 command:
     defb "AT", 13, 10, 0
+reply:
+    defb 13, 10, "OK", 13, 10, 0
 
     module Uart
     include "UartZX/src/divmmc.inc"
@@ -211,22 +237,21 @@ failure handler directly: **89 B code including initialization**, the existing
 shared state byte, **zero internal TX stack and 147 T-states per ready send**.
 
 Do not combine a full backend include with its core or leaves. Optional leaves
-normally follow the core. The exception is `ay_init_keep_mixer.inc`: put it
-immediately **before** `ay_core.inc`, so its relative jump reaches the shared
-initializer without an extra byte or call. The full AY include does this already.
+normally follow the core. The full AY include places `ay_init_keep_mixer.inc`
+before `ay_core.inc`.
 
 ### Optional costs
 
-Each row adds only the listed code/read-only bytes, **zero state** and no selection
-overhead in the core. Constants emit no bytes. An omitted routine has no label
-or machine code. The linker does not prune functions inside a selected object.
+Each row gives the additional code/read-only bytes and adds **zero state**.
+Both AY entry points inline the pin preload to stay below 200 T-states.
+Constants emit no bytes. The linker does not prune functions inside a selected object.
 
 | Include / entry | divMMC | Next | AY |
 |---|---:|---:|---:|
 | `divmmc_write.inc` / compatible A-input `uart_write` | 12 B | — | — |
 | `divmmc_tx_fail.inc` / default first-failure destination | 7 B | — | — |
 | `<backend>_ready.inc` / `uart_ready` | 12 B | 19 B | 10 B |
-| `<backend>_flush.inc` / `uart_flush` | 12 B | 42 B | 38 B |
+| `<backend>_flush.inc` / `uart_flush` | 12 B | 51 B | 38 B |
 | `<backend>_read_block.inc` / `uart_read_block` | 56 B | 45 B | 11 B |
 | `send_string.inc` / `uart_write_string` | 10 B | 10 B | 10 B |
 | `send_block.inc` / `uart_write_block` | 12 B | 12 B | 12 B |
@@ -236,11 +261,11 @@ or machine code. The linker does not prune functions inside a selected object.
 | Each `next_baud_*.inc` optional table | — | 16 B | — |
 | `next_write_block.inc` / `uart_write_block_fast` | — | 46 B | — |
 | `next_try_write.inc` / `uart_try_write` | — | 28 B | — |
-| `next_flush_budget.inc` / `uart_flush_budget` | — | 49 B | — |
+| `next_flush_budget.inc` / `uart_flush_budget` | — | 51 B | — |
 | `next_tx_idle.inc` / `uart_tx_idle` | — | 13 B | — |
 | `next_baud_khz.inc` / both fast-mode effective-rate tables | — | 32 B | — |
 | `next_flow.inc` / `uart_flow_enable`, `uart_flow_disable` | — | 32 B | — |
-| `ay_init_keep_mixer.inc` / `uart_init_keep_mixer` | — | — | 14 B |
+| `ay_init_keep_mixer.inc` / `uart_init_keep_mixer` | — | — | 43 B |
 | `ay_speed.inc` / persistent ESP rate change | — | — | 350 B |
 
 `uart_set_baud` and `uart_baud_115200` stay in the Next core: `uart_init`
@@ -250,10 +275,14 @@ TX failure byte are required by the duplex core, not by optional helpers.
 
 | Configuration | divMMC code + state | Next code + state | AY code + state |
 |---|---:|---:|---:|
-| Minimal compatible duplex core | 78 + 1 B | 185 + 2 B | 326 + 3 B |
-| Compatible full include | 158 + 1 B | 322 + 2 B | 399 + 3 B |
-| Optional duplex flow selection | — | 355 + 2 B | — |
-| Full + both send helpers + all applicable optional leaves/tables/speed | 180 + 1 B | 624 + 2 B | 771 + 3 B |
+| Minimal compatible duplex core | 78 + 1 B | 185 + 2 B | 332 + 3 B |
+| Compatible full include | 158 + 1 B | 331 + 2 B | 434 + 3 B |
+| Optional duplex flow selection | — | 357 + 2 B | — |
+| Full + both send helpers + all applicable optional leaves/tables/speed | 180 + 1 B | 635 + 2 B | 806 + 3 B |
+
+AY initialization takes 181 T-states with `uart_init` and 193 with
+`uart_init_keep_mixer`. On an empty, error-free Next FIFO, `uart_flush`
+takes 106565 T-states and `uart_flush_budget` takes 159777 with DE=2048.
 
 The full Next reset shares assert/release controls that preserve IFF; the
 minimal core omits those 31 bytes entirely. divMMC's shared fast core is 62 B
@@ -265,20 +294,18 @@ raw read 58/78, and immediate write 152. AY write is 4227 T-states, 370 per
 bit; AY read takes 5483 with a byte and 13738 when it times out. These are
 model costs without physical contention or Next wait states.
 
-The cores reached these sizes in a size pass on 2026-11-22 that left entry
+The size pass at `79a94b1` on 2026-11-22 left entry
 points, register contracts, state and every port access as they were.
 `tools/compare_ports.py` checks that: it runs the drivers of a Git revision
 and of the working tree side by side on the same random inputs and compares
 ports, values and order, and on the AY the T-state of each access as well.
-`python tools/compare_ports.py c608493 all --cases 20000` repeats the
+At revision `79a94b1`, `python tools/compare_ports.py c608493 all --cases 20000` repeats the
 comparison with the code before the pass; `--bitdelay 25` and `--bitdelay 54`
 cover the other bit delays the source names. What the test suite checks on
 every run is narrower: the sizes, the Next and divMMC costs above, the 370
 T-states of every AY bit sent and the T-state of each port access of one
-two-byte AY read. No routine
-that runs per byte or per poll takes longer than before; three exits that
-run once or after a failure (`uart_esp_reset_release`, a refused
-`uart_try_write`, an AY byte with a bad stop bit) take 10 to 12 T-states
+two-byte AY read. In the size pass, three exits that ran once or after a failure (`uart_esp_reset_release`, a refused
+`uart_try_write`, an AY byte with a bad stop bit) took 10 to 12 T-states
 more.
 
 [Integration and SpecTalkZX adoption](docs/integration.md) covers fast L-input

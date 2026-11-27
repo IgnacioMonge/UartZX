@@ -37,7 +37,7 @@ from its first release.
   selections, both frame modes, injected recovery checks and over two hours of
   symmetric endurance with 169443328 B of verified payload.
 - Ready-to-include Next duplex flow selection, with 115200/2 Mbaud support,
-  immediate TX, bounded recovery and wire-idle query: 355 code/read-only bytes
+  immediate TX, bounded recovery and wire-idle query: 357 code/read-only bytes
   and two separately allocated state bytes. Both assemblers and a separate-object
   link verify the selection; individual leaves remain available.
 - Optional Next `next_flow.inc`: `uart_flow_enable` / `uart_flow_disable`
@@ -55,14 +55,14 @@ from its first release.
 - Optional Next `uart_flush_budget` with a caller-owned total sample budget,
   independent of the quiet window, and `uart_try_write` with one status sample
   and retryable busy distinct from the existing TX failure latch. Both retain
-  RX error capture and interrupt state, cost 49/28 code bytes, add no state,
+  RX error capture and interrupt state, cost 51/28 code bytes, add no state,
   and leave the core and compatible full Next include unchanged.
 - Portable one-step RX example for all three backends, assembled and executed
   in tests; integration contracts cover AY cache-only readiness, interrupt
   behavior and the divMMC flush's fixed-poll guarantee.
 - Selectable `<backend>_core.inc` and optional ready, flush and block-read
   includes, plus independent string/block send helpers and AY mixer-preserving
-  initialization. Compatible duplex cores emit 78/185/326 code bytes and 1/2/3 state
+  initialization. Compatible duplex cores emit 78/185/332 code bytes and 1/2/3 state
   bytes for divMMC/Next/AY; omitted helpers emit no code or state. Bounded TX,
   fail-stop, RX error capture and Next's initial 115200 configuration remain
   mandatory. README tables and separate-object link tests record the costs.
@@ -125,7 +125,7 @@ from its first release.
   the bits are shorter code than netman-zx's with every port access on the
   same T-state, checked by running both under the same line waveforms
   (`tools/compare_ports.py`) and by a test of one two-byte read; the core is
-  326 bytes and `uart_write` uses 8 bytes of stack.
+  332 bytes and `uart_write` uses 8 bytes of stack.
 - AY stop-bit check: a received byte whose stop bit reads low is dropped
   and latches `UART_RX_FRAMING` in `uart_rx_errors`, and `uart_read` then
   reports nothing until `uart_flush`, as on the Next (`uart_read_raw` opts
@@ -180,8 +180,8 @@ from its first release.
   leaves with the same entry points and transport ABI. z88dk full-include
   builds must add the UartZX `src` directory to their include search path.
   No consumer is migrated automatically.
-- Full Next code shares interrupt-state-preserving reset controls (322 code
-  + 2 state bytes); minimal builds omit all reset code. AY full code is 399
+- Full Next code shares interrupt-state-preserving reset controls (331 code
+  + 2 state bytes); minimal builds omit all reset code. AY full code is 434
   bytes.
 - Compatible divMMC core/full includes retain all public entries and register
   contracts through the optional A adapter. Sharing the L-input algorithm
@@ -193,6 +193,20 @@ from its first release.
 
 ### Fixed
 
+- Both AY initializers preload TX and CTS high before enabling output. An ESP
+  with data queued now holds its first byte until the driver is ready to read.
+  Both leave port A (R14) selected so existing consumers can read or write
+  the pins immediately. The regression exercises direct I/O and first-byte RX.
+- AY raw reads now retain pending recovery when either stop bit is bad.
+  `uart_rx_errors` reports both recovery and framing (`0xC0`).
+- Both Next flush routines restart their 2048-sample quiet window on a new
+  framing or overflow error, including when the RX FIFO is empty. The normal
+  flush counts each active sample once toward its limit. On exhaustion it
+  keeps any framing error and sets the overflow bit. The budgeted flush
+  still counts every sample.
+- The divMMC integration example now requires a complete AT `OK` line within
+  a bounded wait. Tests cover an absent interface on a 48K floating bus,
+  where display data can make a write report success.
 - The quick Next probe rejects RX/TX lengths that differ from its fixed
   workload and records the received bytes on a TX mismatch. All probe
   modes send DONE before shutting down the ESP server, since some firmware
