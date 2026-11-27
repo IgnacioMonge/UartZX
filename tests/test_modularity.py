@@ -12,16 +12,16 @@ from test_next import FRAMING, NextUart
 from ay_model import AyUart
 
 BSS = 0xC000
-CORE = {"divmmc": 78, "next": 185, "ay": 332}
-COMPLETE = {"divmmc": 158, "next": 331, "ay": 434}
-ALL = {"divmmc": 180, "next": 635, "ay": 806}
+CORE = {"divmmc": 77, "next": 188, "ay": 332}
+COMPLETE = {"divmmc": 156, "next": 333, "ay": 435}
+ALL = {"divmmc": 180, "next": 653, "ay": 809}
 STATE = {"divmmc": 1, "next": 2, "ay": 3}
 LEAVES = {
-    "divmmc": {"ready": 12, "flush": 12, "read_block": 56},
-    "next": {"ready": 19, "flush": 51, "read_block": 45, "reset": 23,
-             "esp_reset": 31, "baud_9600": 16, "try_write": 28, "flush_budget": 51,
-             "tx_idle": 13, "baud_khz": 32, "flow": 32},
-    "ay": {"ready": 10, "flush": 38, "read_block": 11},
+    "divmmc": {"ready": 12, "flush": 12, "read_block": 55},
+    "next": {"ready": 19, "flush": 51, "read_block": 44, "reset": 23,
+             "esp_reset": 31, "baud_9600": 16, "try_write": 32, "flush_budget": 51,
+             "tx_idle": 20, "baud_khz": 32, "flow": 32},
+    "ay": {"ready": 11, "flush": 38, "read_block": 11},
 }
 
 
@@ -75,7 +75,7 @@ class Modularity(unittest.TestCase):
 
     def test_next_flow_selection_example(self):
         parts = ((ROOT / "examples" / "next_flow_uart.inc").as_posix(),)
-        self.check_configuration("next", parts, 357)
+        self.check_configuration("next", parts, 371)
 
     def test_minimal_and_complete_assemble_and_link(self):
         for backend in CORE:
@@ -113,12 +113,12 @@ class Modularity(unittest.TestCase):
                         backend, (backend + "_core.inc", backend + "_" + leaf + ".inc"),
                         CORE[backend] + cost,
                     )
-        for leaf, cost in (("string", 10), ("block", 12)):
+        for leaf, cost in (("string", 10), ("block", 14)):
             with self.subTest(send=leaf):
                 self.check_configuration("divmmc", ("divmmc_core.inc", "send_" + leaf + ".inc"), CORE["divmmc"] + cost)
         self.check_configuration("ay", ("ay_init_keep_mixer.inc", "ay_core.inc"), CORE["ay"] + 43)
         # The fast sender does not pull in the generic block/string sender.
-        self.check_configuration("next", ("next_core.inc", "next_write_block.inc"), CORE["next"] + 46)
+        self.check_configuration("next", ("next_core.inc", "next_write_block.inc"), CORE["next"] + 49)
 
     def test_minimal_safety_does_not_depend_on_optional_code(self):
         d = Driver(("divmmc_core.inc", "divmmc_vars.inc"), NoUart())

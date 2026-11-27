@@ -52,8 +52,7 @@ uart_write_send:
     out (c), a
     inc b
     out (c), l
-    or a                        ; CF=0
-    ret
+    ret                         ; the not-busy AND cleared CF
 
 uart_write_fast:
     ld a, (uart_tx_failed)

@@ -298,6 +298,27 @@ class Next(unittest.TestCase):
         d.call("uart_tx_idle")
         self.assertEqual((d.carry, d.byte("uart_tx_failed")), (True, 2))
 
+    def test_status_queries_and_immediate_tx_for_every_flag_combination(self):
+        d, uart = self.d, self.uart
+        for status in range(256):
+            uart.inp = lambda port: status if port == 0x133B else 0x5A
+            errors = status & (FRAMING | OVERFLOW)
+            ready = bool(status & 1) and not errors
+            for routine, carry, io in (
+                ("uart_ready", ready, 1),
+                ("uart_read_raw", ready, 1 + int(ready)),
+                ("uart_tx_idle", bool(status & 0x10), 1),
+                ("uart_try_write", bool(status & 2), 1 if status & 2 else 2),
+            ):
+                with self.subTest(routine=routine, status=status):
+                    d.m.memory[d.symbols["uart_rx_errors"]] = 0
+                    d.io = 0
+                    uart.tx_done.clear()
+                    d.call(routine, a=0x55)
+                    self.assertEqual((d.carry, d.io, self.errors()), (carry, io, errors))
+                    if routine == "uart_read_raw" and ready:
+                        self.assertEqual(d.m.a, 0x5A)
+
     def test_init_programs_the_uart(self):
         d = self.d
         for timing in range(8):
@@ -333,14 +354,14 @@ class Next(unittest.TestCase):
 
     def test_read(self):
         d = self.d
-        self.assertEqual(d.call("uart_read_raw", de=0x1234, hl=0x5678), 58)
+        self.assertEqual(d.call("uart_read_raw", de=0x1234, hl=0x5678), 40)
         self.assertFalse(d.carry)
-        self.assertEqual(d.call("uart_read"), 80)
+        self.assertEqual(d.call("uart_read"), 62)
         self.assertFalse(d.carry)
         self.uart.feed(b"\x00Q")
-        self.assertEqual(d.call("uart_read_raw"), 78)
+        self.assertEqual(d.call("uart_read_raw"), 74)
         self.assertEqual((d.carry, d.m.a), (True, 0))
-        self.assertEqual(d.call("uart_read"), 100)
+        self.assertEqual(d.call("uart_read"), 96)
         self.assertEqual(
             (d.carry, d.m.a, d.m.de, d.m.hl), (True, ord("Q"), 0x1234, 0x5678)
         )
@@ -510,7 +531,7 @@ class Next(unittest.TestCase):
         d = self.d
         for byte in b"AT\r\n":
             took = d.call("uart_write", a=byte, bc=0x1111, de=0x2222, hl=0x3333)
-            self.assertEqual((d.carry, took), (False, 152))
+            self.assertEqual((d.carry, took), (False, 128))
             self.assertEqual(
                 (d.m.a, d.m.bc, d.m.de, d.m.hl), (byte, 0x1111, 0x2222, 0x3333)
             )
@@ -623,8 +644,8 @@ class Next(unittest.TestCase):
 
     def test_write_waits_for_room(self):
         d = self.d
-        # A write takes 152 T-states and a byte leaves every 304, so the TX
-        # FIFO gains one byte every two writes: 160 writes fill it.
+        # At 128 T-states per call, 160 writes fill the 64-byte FIFO
+        # while the wire drains one byte every 304 T-states.
         data = bytes(range(160))
         for byte in data:
             d.call("uart_write", a=byte, bc=0x1111, de=0x2222, hl=0x3333)
@@ -670,7 +691,7 @@ class Next(unittest.TestCase):
         took = d.call("uart_read_block", hl=BUFFER, b=0)
         self.assertEqual((d.carry, d.m.hl, d.m.d), (True, BUFFER + 256, 0))
         self.assertEqual(bytes(d.m.memory[BUFFER : BUFFER + 256]), data[:256])
-        self.assertLess(took / 256, 99)
+        self.assertLess(took / 256, 79)
         d.call("uart_read_block", hl=BUFFER, b=64)
         self.assertEqual((d.carry, d.m.hl), (False, BUFFER + 44))
         self.assertEqual(bytes(d.m.memory[BUFFER : BUFFER + 44]), data[256:])
@@ -717,15 +738,15 @@ class Next(unittest.TestCase):
         # uart_write_block reads no input. Both FIFOs start empty and the ESP
         # sends at the same rate. At 115200 baud and 3.5 MHz the line paces
         # the send and 575 bytes fill the RX FIFO. At 2000000 baud and 28 MHz,
-        # 140 T-states a byte, the send loop is the slower side and 329 do.
-        # uart_write_block_fast keeps up with that line: 573.
+        # 140 T-states a byte, the send loop is the slower side and 391 do.
+        # uart_write_block_fast keeps up with that line: 574.
         for routine, byte, length, lost in (
             ("uart_write_block", BYTE, 575, False),
             ("uart_write_block", BYTE, 576, True),
-            ("uart_write_block", 140, 329, False),
-            ("uart_write_block", 140, 330, True),
-            ("uart_write_block_fast", 140, 573, False),
-            ("uart_write_block_fast", 140, 574, True),
+            ("uart_write_block", 140, 391, False),
+            ("uart_write_block", 140, 392, True),
+            ("uart_write_block_fast", 140, 574, False),
+            ("uart_write_block_fast", 140, 575, True),
         ):
             with self.subTest(routine=routine, byte=byte, length=length):
                 uart = NextUart()
@@ -748,7 +769,7 @@ class Next(unittest.TestCase):
 
     def test_servicing_rx_between_sends_preserves_pending_input(self):
         # 115200 at 3.5/28 MHz, 9600 at 3.5 MHz, and 2 Mbaud at 28 MHz.
-        # The latter needs block RX (~98 T/byte); the per-byte guarded read
+        # The latter needs block RX (~78 T/byte); the per-byte guarded read
         # plus consumer bookkeeping cannot sustain a 140 T/byte input stream.
         for byte in (304, 2431, 3646, 140):
             for pending in (128, 480):
@@ -832,8 +853,8 @@ class Next(unittest.TestCase):
 
         _, slow, _ = self.block_send("uart_write_block", 1024, fast_line)
         _, fast, _ = self.block_send("uart_write_block_fast", 1024, fast_line)
-        self.assertEqual(slow // 1024, 218)
-        self.assertEqual(fast // 1024, 101)
+        self.assertEqual(slow // 1024, 183)
+        self.assertEqual(fast // 1024, 77)
 
 
 if __name__ == "__main__":

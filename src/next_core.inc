@@ -40,8 +40,8 @@
 ;                    Destroys A, BC, DE, HL.
 ;   uart_read        CF=1 and A = byte, or CF=0: nothing waiting, or errors
 ;                    latched (uart_rx_errors is not zero). Destroys BC.
-;                    Preserves DE, HL. 80 T-states empty, 100 with a byte.
-;   uart_read_raw    As uart_read without the latch gate: 58 and 78 T-states.
+;                    Preserves DE, HL. 62 T-states empty, 96 with a byte.
+;   uart_read_raw    As uart_read without the latch gate: 40 and 74 T-states.
 ;                    The read that latches a new error still reports no byte;
 ;                    the next one carries on.
 ;   uart_ready       CF=1 when a byte is waiting and no error is latched; the
@@ -62,7 +62,7 @@
 ;                    shows; returns at once when nothing is waiting or errors
 ;                    are latched. Out: HL = next free position, D = room
 ;                    left, CF=1 buffer full, CF=0 otherwise. Destroys A, BC,
-;                    E. About 89 T-states per byte while the FIFO has data.
+;                    E. About 78 T-states per byte while the FIFO has data.
 ;   uart_esp_reset   Hold the ESP in reset for UART_RESET_FRAMES frames. The
 ;                    same NextReg bit resets the expansion bus: a device on it
 ;                    is reset too. Needs interrupts enabled on entry and
@@ -181,12 +181,10 @@ uart_read:
 uart_read_raw:
     ld bc, UART_TX
     in a, (c)
-    and UART_STATUS_MASK
-    cp UART_RX_OVERFLOW
-    jr nc, uart_latch_rx_error  ; this read saw the error: the latch routine
-                                ; returns for it with CF=0, no byte
-    rrca                        ; RX ready -> CF
-    ret nc
+    and UART_ERROR_MASK + UART_RX_READY
+    ret z                       ; empty, CF=0
+    cp UART_RX_READY + 1        ; only clean RX-ready sets carry
+    jr nc, uart_latch_rx_error  ; return for this read with CF=0
     inc b                       ; UART_RX
     in a, (c)                   ; IN and INC keep CF
     ret
@@ -199,17 +197,20 @@ uart_write:
     jr nz, uart_write_failed    ; fail-stop until uart_init
     ld bc, UART_TX
     in a, (c)
-    and UART_STATUS_MASK
-    cp UART_RX_OVERFLOW
-    call nc, uart_latch_rx_error
-    and UART_TX_FULL
-    jr nz, uart_write_full
+    and UART_ERROR_MASK + UART_TX_FULL
+    jr nz, uart_write_status
 uart_write_send:
     pop af
     out (c), a
     pop bc
     or a                        ; CF=0
     ret
+uart_write_status:
+    cp UART_TX_FULL
+    jr z, uart_write_full
+    call uart_latch_rx_error
+    and UART_TX_FULL
+    jr z, uart_write_send
 uart_write_full:
     push de
     ld de, UART_TX_POLLS

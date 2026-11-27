@@ -377,7 +377,7 @@ class Ay(unittest.TestCase):
         d = self.d
         uart = self.esp()
         uart.feed(b"Q")  # held by the ESP: CTS is high
-        d.call("uart_ready")
+        self.assertEqual(d.call("uart_ready"), 28)
         self.assertFalse(d.carry)
         self.assertEqual((d.io, uart.cts_falls), (0, 0))
         self.assertEqual(self.read(), ord("Q"))

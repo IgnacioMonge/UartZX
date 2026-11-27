@@ -8,11 +8,10 @@ uart_read_block:
     ret nz
     ld bc, UART_TX
     in a, (c)
-    and UART_STATUS_MASK
-    cp UART_RX_OVERFLOW
+    and UART_ERROR_MASK + UART_RX_READY
+    ret z                       ; nothing waiting, CF=0
+    cp UART_RX_READY + 1
     jr nc, uart_read_block_error
-    rrca
-    ret nc                      ; nothing waiting
 uart_read_block_byte:
     inc b                       ; UART_RX
     ini                         ; store, HL+1, B back to UART_TX
@@ -22,13 +21,13 @@ uart_read_block_byte:
     ld e, UART_IDLE_POLLS
 uart_read_block_poll:
     in a, (c)
-    and UART_STATUS_MASK
-    cp UART_RX_OVERFLOW
+    and UART_ERROR_MASK + UART_RX_READY
+    cp UART_RX_READY
+    jr z, uart_read_block_byte  ; common path while the FIFO has data
     jr nc, uart_read_block_error
-    rrca
-    jr c, uart_read_block_byte
     dec e
     jr nz, uart_read_block_poll
-    ret                         ; line idle, CF=0
+    xor a                       ; the empty sample compared below RX-ready
+    ret
 uart_read_block_error:
     jp uart_latch_rx_error      ; returns for this routine; CF=0 from the test

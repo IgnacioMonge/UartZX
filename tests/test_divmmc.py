@@ -190,8 +190,8 @@ class Divmmc(unittest.TestCase):
         self.assertEqual((d.carry, d.m.hl, d.m.d), (True, BUFFER + 256, 0))
         self.assertEqual(bytes(d.m.memory[BUFFER : BUFFER + 256]), data[:256])
         # Flow control paces the ESP: one frame per byte, plus the time from
-        # the byte arriving to its data read (about 57 T-states).
-        self.assertLess(took / 256, FRAME + 60)
+        # the byte arriving to its data read (about 52 T-states).
+        self.assertLess(took / 256, FRAME + 54)
 
         # The next byte is still on the wire: an immediate call returns empty.
         d.call("uart_read_block", hl=BUFFER, b=64)

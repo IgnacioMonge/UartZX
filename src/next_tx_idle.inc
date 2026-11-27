@@ -10,8 +10,13 @@
 uart_tx_idle:
     ld bc, UART_TX
     in a, (c)
+    and UART_ERROR_MASK + 0x10
+    ret z                       ; transmitter busy, no errors
+    cp 0x10                     ; exactly the idle bit on a clean completion
+    jr z, uart_tx_idle_yes
     call uart_latch_rx_error
     and 0x10
     ret z
+uart_tx_idle_yes:
     scf
     ret

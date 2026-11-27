@@ -59,12 +59,12 @@ declaring its fixed buffer address. This is not a build of either application.
 
 | Experiment | Original | Derivative | UartZX |
 |---|---:|---:|---:|
-| Steady RX cost, differential count at 100/200 bytes | 93 T/byte | 108 T/byte | 98 T/byte, existing block test (89 since the 2026-11-22 size pass) |
+| Steady RX cost, differential count at 100/200 bytes | 93 T/byte | 108 T/byte | 98 T/byte, existing block test (89 after the 2026-11-22 size pass, 78 with the current RX loop) |
 | Always-ready source, 2050 bytes, sentinel at `0x6800` | Stores 2050; overwrites sentinel | Stores 2048; sentinel intact | Caller bounds stores to supplied room |
 | Framing flag followed by byte `0x41` | Returns the byte; hardware flag cleared | Same | Latches `0x40`; returns no byte |
 
 The throughput experiment leaves border writes enabled. No interrupt load,
-contention or Next physical waits are included. The original's 5 T/byte lead
+contention or Next physical waits are included. In the original measurement, the 5 T/byte lead
 over UartZX buys neither capacity checks nor error capture; the derivative
 has its capacity check but is 10 T/byte slower than UartZX in this test. This
 does not establish application-level throughput superiority.
@@ -88,7 +88,7 @@ waiting. UartZX retains explicit failure/remaining-count contracts and offers
 Both NextSync variants optionally wait for status bit 4 after sending; their
 version check uses core 3.01.10. The consulted [HDL status construction](https://github.com/avlixa/ZX_Spectrum_Next_FPGA/blob/01e322a39360f4ae89b0c575b7aacae0d2441416/cores/zxnext/src/serial/uart.vhd#L546-L551)
 defines this as FIFO empty **and** serializer not busy, rather than mere
-FIFO room. UartZX now exposes that query in `next_tx_idle.inc` (13 B), preserving
+FIFO room. UartZX now exposes that query in `next_tx_idle.inc` (20 B), preserving
 RX errors and IFF. The caller owns the wait deadline, RX service, exclusive TX
 ownership and core capability check; no automatic wait is added to writes.
 

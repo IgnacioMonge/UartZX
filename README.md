@@ -8,9 +8,9 @@ backends, the same entry points on all of them.
 
 | Backend | Hardware | Minimal code | Compatible full code | State |
 |---|---|---:|---:|---:|
-| divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 78 B | 158 B | 1 B |
-| Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 185 B | 331 B | 2 B |
-| AY | Serial on AY-3-8912 port A, 9600 baud | 332 B | 434 B | 3 B |
+| divMMC / ZX-Uno | ZX-Uno compatible UART (`#FC3B`/`#FD3B`): divTIESUS, ZX-Uno. Fixed 115200 baud | 77 B | 156 B | 1 B |
+| Next | Internal UART (`#133B`..`#163B`), initially 115200 baud | 188 B | 333 B | 2 B |
+| AY | Serial on AY-3-8912 port A, 9600 baud | 332 B | 435 B | 3 B |
 
 Minimal means `src/<backend>_core.inc`; full means the existing
 `src/<backend>.inc`. Both need `src/<backend>_vars.inc` in RAM, or equivalent
@@ -66,17 +66,17 @@ using a backend: they are not identical. In particular:
   initialization still turns flow off.
   The [duplex flow selection](examples/next_flow_uart.inc) combines these
   optional controls with the core, recovery, TX idle and 2 Mbaud metadata/table:
-  357 code/read-only bytes plus the two separately allocated state bytes.
+  371 code/read-only bytes plus the two separately allocated state bytes.
   `uart_write_block` reads no input while it sends. With flow disabled, at the
   same rate both ways with both FIFOs initially empty, a send longer than 575 bytes can
   overflow the RX FIFO at 115200 baud, and a shorter one at faster rates
-  (329 bytes at 2000000 baud and
+  (391 bytes at 2000000 baud and
   28 MHz). With 128 bytes already pending, even a 512-byte send overflows.
   Service RX before sending and between bounded parts; the
   [adoption guide](docs/integration.md#simultaneous-next-rx-and-tx) gives the
   occupancy/time budget and a tested schedule.
   `uart_write_block_fast` (`src/next_write_block.inc`, optional) does the
-  same job with the same checks in 101 T-states a byte instead of 218,
+  same job with the same checks in 77 T-states a byte instead of 183,
   counted without the Next's wait states.
 - **AY:** sending and receiving run with interrupts off and return with them
   enabled; `uart_read` waits up to 3.9 ms; the code and the stack must be in
@@ -225,7 +225,7 @@ For AY:
 
 For a divMMC consumer passing the byte in L, select `divmmc_fast.inc`
 instead. `uart_write_fast` preserves E/HL, clobbers AF/BC/D, uses no internal
-stack, and sends in 147 T-states with TX ready. Supply `uart_tx_fail` as an
+stack, and sends in 143 T-states with TX ready. Supply `uart_tx_fail` as an
 assembly-time destination, or include `divmmc_tx_fail.inc` for the default
 state-1 latch. With that default, `divmmc_fast_open.inc` followed directly by
 `divmmc_tx_fail.inc` is 3 B smaller: the core runs into the destination
@@ -233,8 +233,8 @@ instead of jumping to it. Add `divmmc_write.inc` only when the A-input, register
 `uart_write` API or the generic send helpers are needed. The existing
 `divmmc_core.inc` and `divmmc.inc` include both leaves automatically.
 The complete [Classic example](examples/classic_uart.inc) uses the application's
-failure handler directly: **89 B code including initialization**, the existing
-shared state byte, **zero internal TX stack and 147 T-states per ready send**.
+failure handler directly: **88 B code including initialization**, the existing
+shared state byte, **zero internal TX stack and 143 T-states per ready send**.
 
 Do not combine a full backend include with its core or leaves. Optional leaves
 normally follow the core. The full AY include places `ay_init_keep_mixer.inc`
@@ -250,19 +250,19 @@ Constants emit no bytes. The linker does not prune functions inside a selected o
 |---|---:|---:|---:|
 | `divmmc_write.inc` / compatible A-input `uart_write` | 12 B | — | — |
 | `divmmc_tx_fail.inc` / default first-failure destination | 7 B | — | — |
-| `<backend>_ready.inc` / `uart_ready` | 12 B | 19 B | 10 B |
+| `<backend>_ready.inc` / `uart_ready` | 12 B | 19 B | 11 B |
 | `<backend>_flush.inc` / `uart_flush` | 12 B | 51 B | 38 B |
-| `<backend>_read_block.inc` / `uart_read_block` | 56 B | 45 B | 11 B |
+| `<backend>_read_block.inc` / `uart_read_block` | 55 B | 44 B | 11 B |
 | `send_string.inc` / `uart_write_string` | 10 B | 10 B | 10 B |
-| `send_block.inc` / `uart_write_block` | 12 B | 12 B | 12 B |
-| `send.inc` / both send helpers | 22 B | 22 B | 22 B |
+| `send_block.inc` / `uart_write_block` | 14 B | 14 B | 14 B |
+| `send.inc` / both send helpers | 24 B | 24 B | 24 B |
 | `next_reset.inc` / `uart_esp_reset_assert`, `uart_esp_reset_release` | — | 23 B | — |
 | `next_esp_reset.inc` / legacy frame-wait reset, including `next_reset.inc` | — | 31 B | — |
 | Each `next_baud_*.inc` optional table | — | 16 B | — |
-| `next_write_block.inc` / `uart_write_block_fast` | — | 46 B | — |
-| `next_try_write.inc` / `uart_try_write` | — | 28 B | — |
+| `next_write_block.inc` / `uart_write_block_fast` | — | 49 B | — |
+| `next_try_write.inc` / `uart_try_write` | — | 32 B | — |
 | `next_flush_budget.inc` / `uart_flush_budget` | — | 51 B | — |
-| `next_tx_idle.inc` / `uart_tx_idle` | — | 13 B | — |
+| `next_tx_idle.inc` / `uart_tx_idle` | — | 20 B | — |
 | `next_baud_khz.inc` / both fast-mode effective-rate tables | — | 32 B | — |
 | `next_flow.inc` / `uart_flow_enable`, `uart_flow_disable` | — | 32 B | — |
 | `ay_init_keep_mixer.inc` / `uart_init_keep_mixer` | — | — | 43 B |
@@ -275,24 +275,24 @@ TX failure byte are required by the duplex core, not by optional helpers.
 
 | Configuration | divMMC code + state | Next code + state | AY code + state |
 |---|---:|---:|---:|
-| Minimal compatible duplex core | 78 + 1 B | 185 + 2 B | 332 + 3 B |
-| Compatible full include | 158 + 1 B | 331 + 2 B | 434 + 3 B |
-| Optional duplex flow selection | — | 357 + 2 B | — |
-| Full + both send helpers + all applicable optional leaves/tables/speed | 180 + 1 B | 635 + 2 B | 806 + 3 B |
+| Minimal compatible duplex core | 77 + 1 B | 188 + 2 B | 332 + 3 B |
+| Compatible full include | 156 + 1 B | 333 + 2 B | 435 + 3 B |
+| Optional duplex flow selection | — | 371 + 2 B | — |
+| Full + both send helpers + all applicable optional leaves/tables/speed | 180 + 1 B | 653 + 2 B | 809 + 3 B |
 
 AY initialization takes 181 T-states with `uart_init` and 193 with
 `uart_init_keep_mixer`. On an empty, error-free Next FIFO, `uart_flush`
 takes 106565 T-states and `uart_flush_budget` takes 159777 with DE=2048.
 
 The full Next reset shares assert/release controls that preserve IFF; the
-minimal core omits those 31 bytes entirely. divMMC's shared fast core is 62 B
-with an application failure destination, 69 B with the default one behind its
-jump, or 66 B when `divmmc_fast_open.inc` runs straight into it; the
-compatible A adapter adds 12 B and makes A-input TX 232 T-states with TX
-ready, against 147 for the L entry. Next read is 80/100 T-states empty/byte,
-raw read 58/78, and immediate write 152. AY write is 4227 T-states, 370 per
-bit; AY read takes 5483 with a byte and 13738 when it times out. These are
-model costs without physical contention or Next wait states.
+minimal core omits those 31 bytes entirely. divMMC's shared fast core is 61 B
+with an application failure destination, 68 B with the default one behind its
+jump, or 65 B when `divmmc_fast_open.inc` runs straight into it; the
+compatible A adapter adds 12 B and makes A-input TX 228 T-states with TX
+ready, against 143 for the L entry. Next read is 62/96 T-states empty/byte,
+raw read takes 40/74, and `uart_write` takes 128 with room in the FIFO.
+AY write is 4227 T-states, 370 per bit. AY read takes 5483 with a byte
+and 13738 on timeout. These model costs exclude physical contention and Next wait states.
 
 The size pass at `79a94b1` on 2026-11-22 left entry
 points, register contracts, state and every port access as they were.
@@ -353,9 +353,9 @@ z88dk-z80asm build 24860-762578732c-20260630.
 - `test_modularity.py`: minimal/full configurations and independent optional
   leaves assemble with both tools and link from separate application/driver
   objects; emitted code, BSS size, omitted labels and mandatory safety are checked.
-- `test_classic.py`: complete 89-byte Classic specimen and optional compatible
+- `test_classic.py`: complete 88-byte Classic specimen and optional compatible
   A adapter assembled with both tools, with separate-object z88dk links. Real
-  instructions check the 147/232 T-state paths, E/HL and compatible register
+  instructions check the 143/228 T-state paths, E/HL and compatible register
   contracts, carry, IFF, alternate registers, stack, one shared-state read,
   256-poll timeout, absent UART, effects once, states 1/2, partial strings and
   blocks, inline SNTP's E lifetime, and ten frame waits plus 512 startup reads.

@@ -7,8 +7,8 @@ uart_ready:
     ret nz
     ld bc, UART_TX
     in a, (c)
-    and UART_STATUS_MASK
-    cp UART_RX_OVERFLOW
-    jp nc, uart_latch_rx_error  ; returns for this routine, CF=0
-    rrca
-    ret
+    and UART_ERROR_MASK + UART_RX_READY
+    ret z
+    cp UART_RX_READY + 1        ; clean RX-ready returns CF=1
+    ret c
+    jp uart_latch_rx_error

@@ -12,7 +12,7 @@ adoption and validation of each new UartZX revision.
 
 This section is the record of that day's measurements and is kept as it was.
 A size pass on 2026-11-22 changed the bytes of every selection below without
-changing entry points, contracts or port accesses: the Classic specimen is now
+changing entry points, contracts or port accesses: the Classic specimen at that revision was
 89 B and 147 T-states, the compatible divMMC core 78 B and 232 T-states. The
 current figures are in the [README](../README.md#optional-costs) and in the
 sections that follow this one.
@@ -120,24 +120,24 @@ options, indirect calls or preprocessor feature combinations.
 
 | divMMC file | Supplies | Code |
 |---|---|---:|
-| `divmmc_fast_open.inc` | `uart_init`, `uart_read`, `uart_read_raw`, `uart_write_fast` (L); a TX timeout runs into the next include | 59 B |
-| `divmmc_fast.inc` | The same, closed with `jp uart_tx_fail` | 62 B |
+| `divmmc_fast_open.inc` | `uart_init`, `uart_read`, `uart_read_raw`, `uart_write_fast` (L); a TX timeout runs into the next include | 58 B |
+| `divmmc_fast.inc` | The same, closed with `jp uart_tx_fail` | 61 B |
 | `divmmc_tx_fail.inc` | Default `uart_tx_fail`: latch 1, CF=1 | 7 B |
 | `divmmc_write.inc` | `uart_write` (A), preserves A/BC/DE/HL | 12 B |
-| `divmmc_core.inc` | Open core, default destination and A adapter, same existing API | 78 B |
-| `divmmc.inc` | Compatible core + ready/flush/read-block | 158 B |
+| `divmmc_core.inc` | Open core, default destination and A adapter, same existing API | 77 B |
+| `divmmc.inc` | Compatible core + ready/flush/read-block | 156 B |
 
 Choose `divmmc_fast.inc` plus **one** failure destination: either define
 `uart_tx_fail EQU application_handler`, or include `divmmc_tx_fail.inc`.
 For the default destination, `divmmc_fast_open.inc` with `divmmc_tx_fail.inc`
-as the very next include saves the 3-byte jump (66 B in all). Nothing else
+as the very next include saves the 3-byte jump (65 B in all). Nothing else
 may come between the two: after 256 busy samples the open core executes
 whatever follows it.
 Include `divmmc_write.inc` only if an A-input caller or the generic string/block
 helpers needs it. The L input is native, so an L caller needs no adapter.
 The fast selection alone intentionally has no `uart_write` label. Both
 `divmmc_core.inc` and `divmmc.inc` include that label and its compatible
-contract automatically. The +3 B/+34 T/+2 B stack tradeoff on compatible
+contract automatically. The +2 B/+30 T/+2 B stack tradeoff on compatible
 A-input writes, against the earlier 75 B core, buys a single shared algorithm
 with a zero-overhead Classic L entry. Read costs remain 60/103 T-states empty/byte.
 
@@ -348,7 +348,7 @@ RX bytes and a 512-byte send at:
 | 115200 / 28 MHz | 2431 |
 | 2000000 / 28 MHz | 140 |
 
-At 2 Mbaud/28 MHz, use the optional `uart_read_block` (~89 T/byte while
+At 2 Mbaud/28 MHz, use the optional `uart_read_block` (~78 T/byte while
 data is queued) or an equally measured application drain: the guarded
 single-byte read plus bookkeeping is too slow. This test uses no competing
 ISR, physical wait states or full application ring. It demonstrates a
@@ -362,7 +362,7 @@ its RX errors and queues only when there is room. CF=0 means queued; CF=1
 with `uart_tx_failed=0` means temporarily full, so keep the byte/pointer and
 service RX before retrying. CF=1 with a nonzero latch means a previous
 blocking write failed; no status port is touched in that case. Busy never
-sets the TX failure latch. A/BC/DE/HL and IFF are preserved; cost is 28 code
+sets the TX failure latch. A/BC/DE/HL and IFF are preserved; cost is 32 code
 bytes and no state. Publish RX faults even when TX succeeds or is busy.
 
 Use an application deadline/poll budget; on exhaustion invoke the existing
@@ -379,7 +379,7 @@ competing work; an application must establish its own ring and timing budget.
 Select `next_tx_idle.inc` after the Next core or full include. `uart_tx_idle`
 returns CF=1 when status bit 4 says both FIFO and serializer are idle; CF=0
 while bytes remain queued or on the wire. It samples once, keeps RX errors,
-destroys A/BC and preserves DE/HL/IFF. Cost: 13 code bytes, no state. It does
+destroys A/BC and preserves DE/HL/IFF. Cost: 20 code bytes, no state. It does
 not clear `uart_tx_failed` or consume RX. Only use it on cores supporting
 that status bit; NextSync guards its wait at core 3.01.10. The caller bounds
 the wait, services RX and ensures no writer queues more data before changing
@@ -472,7 +472,7 @@ the diagnostic NEX supplies a hardware-validation caller. See the
 [`examples/next_flow_uart.inc`](../examples/next_flow_uart.inc) supplies that
 selection as one include: core, immediate TX, budgeted recovery, wire-idle query,
 flow controls, effective-rate metadata and the 2000000 divisor table. It emits
-357 code/read-only bytes; allocate `next_vars.inc` separately in writable RAM
+371 code/read-only bytes; allocate `next_vars.inc` separately in writable RAM
 (two bytes). The example adds no entry points or state of its own. Its regression
 assembles identical bytes with sjasmplus/z88dk and links code and state in
 separate objects. Flow remains opt-in after board/ESP negotiation.

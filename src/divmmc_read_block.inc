@@ -23,27 +23,19 @@ uart_read_block_byte:
     dec d
     scf                         ; INI leaves CF undefined on real hardware
     ret z                       ; buffer full, CF=1
-    ; 12 T-states of delay: they keep the status samples where they were
-    ; before INI shortened this path, 2 T-states after a byte that the ESP
-    ; sends at once (see the test). Without them that byte waits 13.
-    jr uart_read_block_idle
-uart_read_block_idle:
     ld e, UART_IDLE_POLLS
 uart_read_block_poll:
     ; Four samples per round keep the wait between a byte arriving and its
     ; read short: with flow control that wait is the cost of each byte.
     in a, (c)
-    add a, a
-    jr c, uart_read_block_byte
+    jp m, uart_read_block_byte
     in a, (c)
-    add a, a
-    jr c, uart_read_block_byte
+    jp m, uart_read_block_byte
     in a, (c)
-    add a, a
-    jr c, uart_read_block_byte
+    jp m, uart_read_block_byte
     in a, (c)
-    add a, a
-    jr c, uart_read_block_byte
+    jp m, uart_read_block_byte
     dec e
     jr nz, uart_read_block_poll
-    ret                         ; line idle, CF=0
+    or a                        ; IN preserves the carry from the last byte
+    ret

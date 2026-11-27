@@ -63,7 +63,7 @@ class Readme(unittest.TestCase):
                 self.assertEqual(uart.errors, [])
 
     def test_minimal_examples(self):
-        for backend, block, size in zip(("divmmc", "next", "ay"), examples()[2:], (79, 187, 335)):
+        for backend, block, size in zip(("divmmc", "next", "ay"), examples()[2:], (78, 190, 335)):
             with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:
                 tmp = Path(tmp)
                 path = tmp / "minimal.inc"

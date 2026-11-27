@@ -40,7 +40,7 @@
 ;   uart_write_fast  L = byte. CF=0 sent, CF=1 not sent. Destroys AF, BC, D.
 ;                    Preserves E, HL, IX, IY, alternate registers and IFF.
 ;                    No stack use beyond the caller's return address.
-;                    TX ready on the first sample: 147 T-states, entry to RET.
+;                    TX ready on the first sample: 143 T-states, entry to RET.
 ;                    Checks uart_tx_failed once: any nonzero value rejects
 ;                    without I/O or invoking uart_tx_fail again.
 ;                    After 256 busy samples, tail-jumps to uart_tx_fail.
@@ -106,8 +106,7 @@ uart_write_send:
     out (c), a
     inc b
     out (c), l
-    or a                        ; CF=0
-    ret
+    ret                         ; the not-busy AND cleared CF
 
 uart_write_fast:
     ld a, (uart_tx_failed)

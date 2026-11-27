@@ -102,20 +102,20 @@ it does not apply to this hardware.
 
 ### Numbers
 
-- 159 bytes with its state byte, 181 with `send.inc` (the copied BridgeZXadv
+- 157 bytes with its state byte, 181 with `send.inc` (the copied BridgeZXadv
   driver was 195).
-- Compatible core: 78 code bytes; fast core with default failure destination:
-  69, or 66 when `divmmc_fast_open.inc` runs into it without a jump. The fast
-  core with an application destination is 62 bytes. Classic's
-  complete init/read/send specimen is 89 bytes, below the original 101.
-- TX ready: fast L-input 147 T-states, zero internal stack; compatible A-input
-  232 T-states, six temporary stack bytes (excluding the caller's return address).
+- Compatible core: 77 code bytes; fast core with default failure destination:
+  68, or 65 when `divmmc_fast_open.inc` runs into it without a jump. The fast
+  core with an application destination is 61 bytes. Classic's
+  complete init/read/send specimen is 88 bytes, below the original 101.
+- TX ready: fast L-input 143 T-states, zero internal stack; compatible A-input
+  228 T-states, six temporary stack bytes (excluding the caller's return address).
   The compatible API formerly cost 75 bytes, 198 T-states and four stack
-  bytes; sharing the L-input algorithm trades +3 code bytes/+34 T-states/+2
+  bytes; sharing the L-input algorithm trades +2 code bytes/+30 T-states/+2
   stack bytes there for a Classic path with no integration overhead.
 - `uart_read`: 60 T-states empty, 103 with a byte (measured by the test).
-- `uart_read_block`: 361 T-states per byte in the model, which is the 304 of
-  the wire plus 57 from a byte arriving to its data read.
+- `uart_read_block`: 356 T-states per byte in the model, which is the 304 of
+  the wire plus 52 from a byte arriving to its data read.
 - `uart_read_block` is new code.
 
 ### What adopting it changes in each application
@@ -177,7 +177,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | One-byte RX cache, peek with value | BridgeZXadv | Dropped | The FIFO keeps the byte; `uart_ready` is status only |
 | TX refuses while RX errors are latched | BridgeZXadv, NetChessZX (C layer) | Dropped | RX health does not decide whether a byte can be queued; the application can test `uart_rx_errors` |
 | Bounded TX wait with a failure latch | SpecTalkZX, BitStream | Taken, 4096 samples | Over ten byte times at 9600 baud and 28 MHz (the NetManZX sizing). 256 samples (BridgeZXadv, NetChessZX) are under one byte there |
-| RX moved into a ring during a TX wait | SpecTalkZX, BitStream | Application-owned | Driver remains ring-independent. A healthy TX wait is at most one byte time, but the full failure timeout is longer. With flow disabled, whole block sends read no input: with both FIFOs empty the model loses input past 575 TX bytes at 115200/3.5 MHz, or 329 at 2000000/28 MHz (218 T/byte loop); fast block send moves the latter to 573 (101 T/byte, no physical wait states). With 128 RX bytes pending even a 512-byte send overflows. `integration.md` specifies occupancy/time budgets, tested RX service before sends, and application polling with RX service for stalled TX |
+| RX moved into a ring during a TX wait | SpecTalkZX, BitStream | Application-owned | Driver remains ring-independent. A healthy TX wait is at most one byte time, but the full failure timeout is longer. With flow disabled, whole block sends read no input: with both FIFOs empty the model loses input past 575 TX bytes at 115200/3.5 MHz, or 391 at 2000000/28 MHz (183 T/byte loop); fast block send moves the latter to 574 (77 T/byte, no physical wait states). With 128 RX bytes pending even a 512-byte send overflows. `integration.md` specifies occupancy/time budgets, tested RX service before sends, and application polling with RX service for stalled TX |
 | Baud tables: 115200, 230400, 2000000 | BridgeZXadv | Taken | 115200 in the driver; every other rate is a 16-byte file an application includes only if it uses it |
 | Baud tables: 9600, 57600, 1152000 | NetManZX | Taken | Same |
 | 2000000 baud table | BridgeZXadv and NetManZX disagree | The BridgeZXadv values | Nearest divisors; a test checks every table against the documented clocks |
@@ -196,7 +196,7 @@ Read from the Next core (`cores/zxnext/src/serial/uart.vhd`, `ports.txt`,
 | 50/60 Hz detection | NetChessZX | Left to the application | Timeout pacing, not a UART matter |
 | Read timeouts counted in frames | NetManZX | Left to the application | Depends on the ROM frame counter and the keyboard |
 | Hardware flow controls | NextSync configuration pattern | Optional `next_flow.inc` | 32 B, no state: change only ESP frame bit 5, restore UART selection and preserve IFF. Board/pin capability, ESP negotiation, deadlines and fallback stay in the caller; init keeps flow off |
-| Block send with the status test inline | none | Added as `uart_write_block_fast`, optional file `next_write_block.inc` | 101 T-states a byte instead of 218 through `send.inc`, which at 28 MHz cannot keep up with 2000000 baud. Both counts leave out the Next's wait states. Same checks: a not-full status read that keeps the receive errors before every byte, the wait of `uart_write` on a full FIFO, the failure latch. A test runs both senders through the same five cases and compares every result. External audit |
+| Block send with the status test inline | none | Added as `uart_write_block_fast`, optional file `next_write_block.inc` | 77 T-states a byte instead of 183 through `send.inc`, which at 28 MHz cannot keep up with 2000000 baud. Both counts leave out the Next's wait states. Same checks: a not-full status read that keeps the receive errors before every byte, the wait of `uart_write` on a full FIFO, the failure latch. A test runs both senders through the same five cases and compares every result. External audit |
 
 ### Numbers
 
@@ -205,12 +205,12 @@ a Next adds at 28 MHz.
 
 | | Canonical | BridgeZXadv | NetChessZX | SpecTalkZX |
 |---|---|---|---|---|
-| Read, nothing pending | 80 (58 raw) | 117 | 80 | 99 |
-| Read, byte returned | 100 (78 raw) | not counted | not counted | not counted |
-| Size | 333 bytes | 360 bytes | 239 bytes | 267 bytes |
+| Read, nothing pending | 62 (40 raw) | 117 | 80 | 99 |
+| Read, byte returned | 96 (74 raw) | not counted | not counted | not counted |
+| Size | 335 bytes | 360 bytes | 239 bytes | 267 bytes |
 
-- The 333 bytes include the 115200 table, interrupt-state-preserving reset
-  controls and two state bytes; the duplex core alone is 187 bytes including
+- The 335 bytes include the 115200 table, interrupt-state-preserving reset
+  controls and two state bytes; the duplex core alone is 190 bytes including
   state. The pre-modularity total was 331 bytes.
   Each further rate adds 16. The 360 of BridgeZXadv include three tables.
 - Nearest divisors still miss the rate. The worst case of each table:
@@ -226,10 +226,10 @@ a Next adds at 28 MHz.
 
   The tests do not show whether the ESP accepts the 3.57 % at 2000000 baud
   over HDMI: the UART model does not derive its byte time from the divisor.
-- `uart_write` takes 152 T-states when the FIFO has room.
-- `uart_read_block` stores a byte every 89 T-states while the FIFO has data;
+- `uart_write` takes 128 T-states when the FIFO has room.
+- `uart_read_block` stores a byte every 78 T-states while the FIFO has data;
   at 2000000 baud and 28 MHz a byte arrives every 140.
-- `next_write_block.inc` adds 46 bytes.
+- `next_write_block.inc` adds 49 bytes.
 - `uart_read_block`, the quiet-window `uart_flush` and the selection
   read-back in `uart_set_baud` are new code.
 
@@ -326,7 +326,7 @@ the three drivers agree on and from the AY-3-8912 register set.
 | Block send with interrupts off throughout, IX as constant | BitStream | Dropped | Saves about 4 % per byte; `send.inc` does the job |
 | Drain into the application ring | BitStream | Left to the application | `uart_read_block` is ring-agnostic |
 | Mixer register written as `#FC` | upstream, NetManZX, BitStream | Taken in `uart_init` | It rewrites the whole register, tones A and B included. Kept because every application does it. `uart_init_keep_mixer` reads the register back and sets bit 6 only, for programs that play music |
-| Stop bit checked | none | Added | Upstream and both applications store a byte after its eighth data bit, so a line held low read as a run of `#00` bytes. The stop bit is sampled 9.4 to 9.7 bit times after the start edge, as measured in the model, for the first byte and for a second one. A low one drops the byte and latches `UART_RX_FRAMING` in `uart_rx_errors`; reads stay refused until `uart_flush`, as on the Next. A read that gets a byte takes 152 T-states more, one that times out 22 more, for the gate. With `uart_init_keep_mixer` and the gate in `uart_ready` the driver grew by 80 bytes. External audit |
+| Stop bit checked | none | Added | Upstream and both applications store a byte after its eighth data bit, so a line held low read as a run of `#00` bytes. The stop bit is sampled 9.4 to 9.7 bit times after the start edge, as measured in the model, for the first byte and for a second one. A low one drops the byte and latches `UART_RX_FRAMING` in `uart_rx_errors`; reads stay refused until `uart_flush`, as on the Next. A read that gets a byte takes 128 T-states more, one that times out 22 more, for the gate. With `uart_init_keep_mixer` and the gate in `uart_ready` the driver grew by 80 bytes. External audit |
 | Interrupt state preserved | none | Not taken | Every source returns with interrupts enabled |
 
 ### The speed command never reached a factory ESP
@@ -350,7 +350,7 @@ T-states measured by the tests on the Python `z80` emulator.
 
 | | Canonical | Copied NetManZX driver |
 |---|---|---|
-| Size (including state) | 437 bytes, plus 350 for `ay_speed.inc` | 656 bytes |
+| Size (including state) | 438 bytes, plus 350 for `ay_speed.inc` | 656 bytes |
 | TX bit | 370 | 370 |
 | `uart_write` | 4227 | not measured |
 | `uart_read`, byte | 5483 | not measured |

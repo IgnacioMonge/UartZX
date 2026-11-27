@@ -141,9 +141,9 @@ class Classic(unittest.TestCase):
                 image = sjasmplus(tmp, "sj", includes)
                 assert image == z80asm(tmp, "z80", includes)
                 table = symbols((tmp / "sj.sym").read_text())
-                assert table["specimen_end"] - ORG == 89 + 12 * compatible
+                assert table["specimen_end"] - ORG == 88 + 12 * compatible
                 linked = classic_link(tmp, compatible)
-                assert len(linked[0][ORG]) == 10 + 89 + 12 * compatible
+                assert len(linked[0][ORG]) == 10 + 88 + 12 * compatible
                 assert len(linked[0][0xC000]) == 6  # all external, not new driver state
                 cls.images[compatible] = linked
 
@@ -193,7 +193,7 @@ class Classic(unittest.TestCase):
                             d, uart = self.driver(compatible)
                             uart.feed(b"RX")
                             took = self.invoke(d, entry, byte=byte, compatible=compatible, iff=iff, flags=flags)
-                            self.assertEqual(took, 232 if compatible else 147)
+                            self.assertEqual(took, 228 if compatible else 143)
                             self.assertFalse(d.carry)
                             self.assertEqual((uart.sent, uart.status_reads, uart.data_reads), (bytes([byte]), 1, 0))
                             self.assertEqual((d.state_reads, d.failures), (1, 0))
@@ -300,10 +300,10 @@ class Classic(unittest.TestCase):
 
     def test_default_and_compatible_selections_and_send_helpers(self):
         command = b"CMD arg\r\n"
-        for parts, size in ((["divmmc_fast.inc", "divmmc_tx_fail.inc"], 69),
+        for parts, size in ((["divmmc_fast.inc", "divmmc_tx_fail.inc"], 68),
                             # Left open, the core runs into the destination: no jump.
-                            (["divmmc_fast_open.inc", "divmmc_tx_fail.inc"], 66),
-                            (["divmmc_core.inc"], 78), (["divmmc.inc"], 158)):
+                            (["divmmc_fast_open.inc", "divmmc_tx_fail.inc"], 65),
+                            (["divmmc_core.inc"], 77), (["divmmc.inc"], 156)):
             with self.subTest(parts=parts), tempfile.TemporaryDirectory() as folder:
                 tmp = Path(folder)
                 includes = [source(p) for p in parts + ["divmmc_vars.inc"]]
