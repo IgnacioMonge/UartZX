@@ -181,6 +181,14 @@ from its first release.
   byte (previously 89). With space in the TX FIFO, the generic block sender
   drops from 218 to 183 T-states per byte and the fast sender from 101 to 77.
   Error bits are still captured on every status sample.
+
+  On a real Spectrum Next, both `6c318a4` and `8902dea` passed all 44 cases
+  in the same battery. From `6c318a4` to `8902dea`, sustained payload
+  throughput increased from 7.191 to 7.243 kB/s at 115200 baud (+0.73%)
+  and from 15.762 to 16.684 kB/s at 2 Mbaud (+5.85%). These rates apply
+  to both TX and RX during simultaneous transfers, measured over 12
+  five-minute phases per rate and commit.
+  [Commit comparison](https://github.com/IgnacioMonge/UartZX/compare/6c318a4...8902dea)
 - All three backends advance the shared block sender in 11 fewer T-states per
   additional byte. On divMMC, a 256-byte read at 115200 baud takes about 356
   T-states per byte instead of 361 in the 3.5 MHz model. AY readiness with an
